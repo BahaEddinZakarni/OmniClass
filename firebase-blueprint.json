@@ -1,0 +1,70 @@
+{
+  "entities": {
+    "Student": {
+      "title": "Student",
+      "description": "Details of a single student",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "firstName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "fullName": { "type": "string" },
+        "color": { "type": "string", "description": "Highlight color ID (emerald or sky)" }
+      },
+      "required": ["id", "firstName", "lastName", "fullName"]
+    },
+    "Assessment": {
+      "title": "Assessment",
+      "description": "Information about a graded assessment",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "weight": { "type": "number" }
+      },
+      "required": ["name", "weight"]
+    },
+    "ClassSection": {
+      "title": "ClassSection",
+      "description": "Class section model containing enrolled students, attendance registry, and grades",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "students": {
+          "type": "array",
+          "items": { "type": "object", "$ref": "#/entities/Student" }
+        },
+        "attendance": {
+          "type": "object",
+          "description": "Attendance history indexed by studentId and dateString"
+        },
+        "assessments": {
+          "type": "array",
+          "items": { "type": "object", "$ref": "#/entities/Assessment" }
+        },
+        "grades": {
+          "type": "object",
+          "description": "Grades history indexed by studentId and assessmentName"
+        }
+      },
+      "required": ["name", "students", "attendance", "assessments", "grades"]
+    },
+    "UserData": {
+      "title": "UserData",
+      "description": "Persistent root state for a user's classes",
+      "type": "object",
+      "properties": {
+        "classes": {
+          "type": "array",
+          "items": { "type": "object", "$ref": "#/entities/ClassSection" }
+        }
+      },
+      "required": ["classes"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserData",
+      "description": "Stores user-specific classes, attendance records, highlighted student flags, and grade documents securely."
+    }
+  }
+}

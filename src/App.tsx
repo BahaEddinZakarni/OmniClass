@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   GraduationCap, 
   Users, 
@@ -18,10 +18,21 @@ import {
   Info,
   X,
   Menu,
-  Search
+  Search,
+  LogOut,
+  LogIn,
+  Cloud,
+  CloudOff,
+  RefreshCw,
+  Lock
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Student, Assessment, ClassSection } from './types';
+
+// Import Firebase config & handlers
+import { auth, db, googleProvider, handleFirestoreError, OperationType } from './firebase';
+import { signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
+import { doc, setDoc, onSnapshot } from 'firebase/firestore';
 
 // Matching app.py representation precisely for visual source codes exporter panel
 const PYTHON_STREAMLIT_CODE = `import streamlit as st
@@ -333,10 +344,115 @@ export default function App() {
   } | null>(null);
   const [selectedShortIds, setSelectedShortIds] = useState<string[]>([]);
 
-  // Sync to localStorage
+  // Firebase Authentication & Realtime Cloud Sync engine
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncErrorMessage, setSyncErrorMessage] = useState<string | null>(null);
+  
+  const lastFirestoreDataRef = useRef<string>('');
+
+  // 1. Listen for Authentication Changes
   useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser);
+      setAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 2. Real-time Firestore inbound state updates (onSnapshot)
+  useEffect(() => {
+    if (!user) {
+      lastFirestoreDataRef.current = '';
+      return;
+    }
+
+    setIsSyncing(true);
+    setSyncErrorMessage(null);
+
+    const docRef = doc(db, 'users', user.uid);
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      setIsSyncing(false);
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data && Array.isArray(data.classes)) {
+          const firestoreClassesStr = JSON.stringify(data.classes);
+          // Avoid setting state and causing infinite loops if data didn't actually change
+          if (firestoreClassesStr !== JSON.stringify(classes)) {
+            lastFirestoreDataRef.current = firestoreClassesStr;
+            setClasses(data.classes);
+          }
+        }
+      } else {
+        // First-time user: persist current client-side state into Firestore automatically
+        setDoc(docRef, { classes }, { merge: true })
+          .then(() => {
+            lastFirestoreDataRef.current = JSON.stringify(classes);
+          })
+          .catch((err) => {
+            console.error("Failed to sync initial roster to Firestore:", err);
+            setSyncErrorMessage("Failed to sync initial roster to Firestore.");
+          });
+      }
+    }, (error) => {
+      setIsSyncing(false);
+      console.error("Firestore synchronizer error:", error);
+      setSyncErrorMessage("Unauthorized connection or offline database error.");
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // 3. Keep local fallback in sync & upload local modifications to cloud doc
+  useEffect(() => {
+    // Sync to localStorage always as our bulletproof local fallback buffer
     localStorage.setItem('streamlit_class_sections', JSON.stringify(classes));
-  }, [classes]);
+
+    if (!user) return;
+
+    const currentClassesStr = JSON.stringify(classes);
+    // If the state was updated locally and differs from last Firestore data, upload it!
+    if (currentClassesStr !== lastFirestoreDataRef.current) {
+      setIsSyncing(true);
+      const docRef = doc(db, 'users', user.uid);
+      setDoc(docRef, { classes }, { merge: true })
+        .then(() => {
+          lastFirestoreDataRef.current = currentClassesStr;
+          setIsSyncing(false);
+          setSyncErrorMessage(null);
+        })
+        .catch((err) => {
+          setIsSyncing(false);
+          console.error("Firestore sync write failed: ", err);
+          try {
+            handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`);
+          } catch (handledErr) {
+            setSyncErrorMessage("Database save rejected. Check Firebase rules.");
+          }
+        });
+    }
+  }, [classes, user]);
+
+  const handleGoogleSignIn = async () => {
+    try {
+      setSyncErrorMessage(null);
+      await signInWithPopup(auth, googleProvider);
+    } catch (error: any) {
+      console.error("Sign-in failed:", error);
+      setSyncErrorMessage(error.message || "Failed to sign in with Google.");
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      setSyncErrorMessage(null);
+      await signOut(auth);
+    } catch (error: any) {
+      console.error("Sign-out failed:", error);
+      setSyncErrorMessage("Failed to sign out.");
+    }
+  };
 
   // Set default checkboxes when a new pending import is staged
   useEffect(() => {
@@ -1054,7 +1170,73 @@ export default function App() {
       <div className="flex-1 flex flex-col lg:flex-row" id="streamlit-workspace">
         {/* SIDEBAR WIDGET PANELS */}
         <aside className={`${isSidebarOpen ? 'flex' : 'hidden'} w-full lg:w-80 bg-white border-r border-slate-200 p-5 flex-col shrink-0 gap-6`} id="streamlit-sidebar">
+          
+          {/* Firebase Sync Widget */}
+          <div className="bg-slate-50/80 p-3.5 rounded-xl border border-slate-200 shadow-3xs flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-extrabold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                <Cloud className={`h-4 w-4 ${user ? 'text-indigo-600' : 'text-slate-400'}`} />
+                Cloud Database Sync
+              </span>
+              
+              {user && (
+                <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold ${
+                  isSyncing ? 'bg-amber-50 text-amber-700 animate-pulse' : 'bg-emerald-50 text-emerald-700'
+                }`}>
+                  <span className={`w-1 h-1 rounded-full mr-1 ${isSyncing ? 'bg-amber-500 animate-ping' : 'bg-emerald-500'}`} />
+                  {isSyncing ? "Syncing..." : "Synced"}
+                </span>
+              )}
+            </div>
+
+            {authLoading ? (
+              <div className="flex items-center gap-2 text-xs text-slate-400 font-medium">
+                <RefreshCw className="h-3 w-3 animate-spin text-slate-500" />
+                <span>Checking cloud sync...</span>
+              </div>
+            ) : user ? (
+              <div className="flex flex-col gap-2">
+                <div className="text-[11px] text-slate-500 bg-white p-2 rounded-lg border border-slate-150 flex flex-col gap-0.5">
+                  <div className="font-semibold text-slate-800 truncate flex items-center gap-1" title={user.email || ""}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                    {user.displayName || "Teacher Session"}
+                  </div>
+                  <div className="text-[10px] text-slate-400 truncate">{user.email}</div>
+                </div>
+
+                <button
+                  onClick={handleSignOut}
+                  className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 hover:border-rose-300 text-rose-700 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-3xs"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                  Sign Out of Sync
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2.5">
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  Sign in with Google to dynamically save progress. Access your class sections, attendance, and student highlights from any browser/device.
+                </p>
+                <button
+                  onClick={handleGoogleSignIn}
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] text-white rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs border border-indigo-700"
+                >
+                  <LogIn className="h-3.5 w-3.5" />
+                  Sign In with Google
+                </button>
+              </div>
+            )}
+
+            {syncErrorMessage && (
+              <div className="bg-red-50 text-red-700 border border-red-100 p-2 rounded-lg text-[10.5px] font-medium leading-normal flex items-start gap-1.5">
+                <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                <span>{syncErrorMessage}</span>
+              </div>
+            )}
+          </div>
+
           {/* Section Selector */}
+
           <div className="flex flex-col gap-2" id="sidebar-class-selector">
             <label className="text-xs font-extrabold text-slate-600 uppercase tracking-widest flex items-center justify-between">
               Active Class Section
