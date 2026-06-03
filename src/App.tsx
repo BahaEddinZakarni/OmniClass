@@ -31,7 +31,7 @@ import { Student, Assessment, ClassSection } from './types';
 
 // Import Firebase config & handlers
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from './firebase';
-import { signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
+import { signInWithPopup, signOut, onAuthStateChanged, User, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { doc, setDoc, onSnapshot } from 'firebase/firestore';
 
 // Matching app.py representation precisely for visual source codes exporter panel
@@ -433,6 +433,42 @@ export default function App() {
         });
     }
   }, [classes, user]);
+
+  const [usernameInput, setUsernameInput] = useState('workshop2');
+  const [passwordInput, setPasswordInput] = useState('WorkShop2@Sections');
+
+  const handlePasswordSignIn = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!usernameInput.trim() || !passwordInput) {
+      setSyncErrorMessage("Please enter username and password.");
+      return;
+    }
+    setIsSyncing(true);
+    setSyncErrorMessage(null);
+    
+    // Map custom simple username to a firebase-auth email internally
+    const email = usernameInput.includes('@') ? usernameInput : `${usernameInput.trim()}@omniclass-cd395.firebaseapp.com`;
+    
+    try {
+      await signInWithEmailAndPassword(auth, email, passwordInput);
+    } catch (error: any) {
+      // If the user hasn't been created yet, let's automatically registered to make setup seamless!
+      if (error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential') {
+        try {
+          // Attempt registering since we want seamless cross-device auth with baked-in defaults
+          await createUserWithEmailAndPassword(auth, email, passwordInput);
+        } catch (createErr: any) {
+          console.error("Auto registration failed: ", createErr);
+          setSyncErrorMessage(createErr.message || "Invalid credentials. If user exists, check your password.");
+        }
+      } else {
+        console.error("Password sign-in failed:", error);
+        setSyncErrorMessage(error.message || "Invalid credentials or login failed.");
+      }
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   const handleGoogleSignIn = async () => {
     try {
@@ -1196,12 +1232,12 @@ export default function App() {
               </div>
             ) : user ? (
               <div className="flex flex-col gap-2">
-                <div className="text-[11px] text-slate-500 bg-white p-2 rounded-lg border border-slate-150 flex flex-col gap-0.5">
-                  <div className="font-semibold text-slate-800 truncate flex items-center gap-1" title={user.email || ""}>
+                <div className="text-[11px] text-slate-500 bg-white p-2.5 rounded-lg border border-slate-150 flex flex-col gap-1 shadow-3xs">
+                  <div className="font-semibold text-slate-800 truncate flex items-center gap-1.5" title={user.email || ""}>
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                    {user.displayName || "Teacher Session"}
+                    <span className="truncate">{user.displayName || user.email?.split('@')[0] || "Logged In"}</span>
                   </div>
-                  <div className="text-[10px] text-slate-400 truncate">{user.email}</div>
+                  <div className="text-[10px] text-slate-400 truncate font-mono">{user.email}</div>
                 </div>
 
                 <button
@@ -1209,22 +1245,65 @@ export default function App() {
                   className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 hover:border-rose-300 text-rose-700 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-3xs"
                 >
                   <LogOut className="h-3.5 w-3.5" />
-                  Sign Out of Sync
+                  Sign Out / Disconnect
                 </button>
               </div>
             ) : (
-              <div className="flex flex-col gap-2.5">
-                <p className="text-[11px] text-slate-500 leading-relaxed">
-                  Sign in with Google to dynamically save progress. Access your class sections, attendance, and student highlights from any browser/device.
+              <form onSubmit={handlePasswordSignIn} className="flex flex-col gap-2.5">
+                <p className="text-[11px] text-slate-500 leading-relaxed font-semibold">
+                  Sign in to keep your changes synced across all devices and browsers (work and home PCs).
                 </p>
+
+                <div className="flex flex-col gap-1 text-[11px]">
+                  <span className="text-slate-600 font-bold uppercase tracking-wider text-[9px]">Username</span>
+                  <input
+                    type="text"
+                    value={usernameInput}
+                    onChange={(e) => setUsernameInput(e.target.value)}
+                    placeholder="e.g. workshop2"
+                    className="w-full text-xs px-2.5 py-1.5 rounded border border-slate-200 bg-white shadow-3xs focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1 text-[11px]">
+                  <span className="text-slate-600 font-bold uppercase tracking-wider text-[9px]">Password</span>
+                  <input
+                    type="password"
+                    value={passwordInput}
+                    onChange={(e) => setPasswordInput(e.target.value)}
+                    placeholder="Password"
+                    className="w-full text-xs px-2.5 py-1.5 rounded border border-slate-200 bg-white shadow-3xs focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                  />
+                </div>
+
                 <button
-                  onClick={handleGoogleSignIn}
-                  className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] text-white rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs border border-indigo-700"
+                  type="submit"
+                  disabled={isSyncing}
+                  className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] text-white rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs border border-indigo-700 mt-1 disabled:opacity-50"
                 >
-                  <LogIn className="h-3.5 w-3.5" />
+                  {isSyncing ? (
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <LogIn className="h-3.5 w-3.5" />
+                  )}
+                  Sign In (Username & Password)
+                </button>
+
+                <div className="flex items-center gap-2 my-1">
+                  <div className="flex-1 h-px bg-slate-200"></div>
+                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">or</span>
+                  <div className="flex-1 h-px bg-slate-200"></div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleGoogleSignIn}
+                  className="w-full flex items-center justify-center gap-2 px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-semibold transition-all cursor-pointer shadow-3xs border border-slate-200"
+                >
+                  <LogIn className="h-3 w-3 text-slate-500" />
                   Sign In with Google
                 </button>
-              </div>
+              </form>
             )}
 
             {syncErrorMessage && (
