@@ -304,6 +304,7 @@ export default function App() {
   const [isCreatingClass, setIsCreatingClass] = useState(false);
   const [confirmDeleteClass, setConfirmDeleteClass] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [expandedSearchStudentId, setExpandedSearchStudentId] = useState<string | null>(null);
 
   // Manual Add Student form
   const [studentIdInput, setStudentIdInput] = useState('');
@@ -442,6 +443,12 @@ export default function App() {
   const [usernameInput, setUsernameInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
 
+  // States for importing student roster ONLY during new class creation modal
+  const [createdClassStudents, setCreatedClassStudents] = useState<Student[]>([]);
+  const [createdClassFileError, setCreatedClassFileError] = useState<string | null>(null);
+  const [createdClassFileSuccess, setCreatedClassFileSuccess] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+
   const handlePasswordSignIn = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!usernameInput.trim() || !passwordInput) {
@@ -550,7 +557,7 @@ export default function App() {
     }));
   };
 
-  // Creation of a New Class Section database row
+  // Creation of a New Class Section database row (including optional roster import)
   const handleCreateClass = (e: React.FormEvent) => {
     e.preventDefault();
     const formattedName = newClassNameInput.trim();
@@ -561,18 +568,148 @@ export default function App() {
       return;
     }
 
+    const initialAttendance: any = {};
+    const initialGrades: any = {};
+    createdClassStudents.forEach(st => {
+      initialAttendance[st.id] = {};
+      initialGrades[st.id] = {};
+    });
+
     const newClass: ClassSection = {
       name: formattedName,
-      students: [],
-      attendance: {},
+      students: createdClassStudents,
+      attendance: initialAttendance,
       assessments: [],
-      grades: {}
+      grades: initialGrades
     };
 
     setClasses(prev => [...prev, newClass]);
     setActiveClassName(formattedName);
+    
+    // Reset states
     setNewClassNameInput('');
+    setCreatedClassStudents([]);
+    setCreatedClassFileError(null);
+    setCreatedClassFileSuccess(null);
     setIsCreatingClass(false);
+  };
+
+  // Parsing helper for file upload inside class creation modal
+  const handleModalRosterFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setCreatedClassFileError(null);
+    setCreatedClassFileSuccess(null);
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    processModalRosterFile(file);
+  };
+
+  const processModalRosterFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = evt.target?.result;
+        let jsonRows: any[] = [];
+
+        const workbook = XLSX.read(data, { type: 'binary' });
+        const firstSheet = workbook.SheetNames[0];
+        jsonRows = XLSX.utils.sheet_to_json<any>(workbook.Sheets[firstSheet]);
+
+        if (!jsonRows || jsonRows.length === 0) {
+          setCreatedClassFileError("The uploaded file contains zero records or is corrupted.");
+          return;
+        }
+
+        const normalizedRows = jsonRows.map(row => {
+          const keys = Object.keys(row);
+          const normalized: any = {};
+          keys.forEach(k => {
+            normalized[k.trim().toLowerCase().replace(/\s+/g, '')] = row[k];
+          });
+          return { original: row, norm: normalized };
+        });
+
+        const idKeys = ['idnumber', 'id', 'studentid', 'studentnumber'];
+        const firstKeys = ['firstname', 'first', 'givenname'];
+        const lastKeys = ['lastname', 'last', 'surname'];
+
+        let resolvedIdKeySrc = '';
+        let resolvedFirstKeySrc = '';
+        let resolvedLastKeySrc = '';
+
+        for (const row of normalizedRows) {
+          const keys = Object.keys(row.original);
+          keys.forEach(k => {
+            const cleanK = k.trim().toLowerCase().replace(/\s+/g, '');
+            if (idKeys.includes(cleanK) && !resolvedIdKeySrc) resolvedIdKeySrc = k;
+            if (firstKeys.includes(cleanK) && !resolvedFirstKeySrc) resolvedFirstKeySrc = k;
+            if (lastKeys.includes(cleanK) && !resolvedLastKeySrc) resolvedLastKeySrc = k;
+          });
+          if (resolvedIdKeySrc && resolvedFirstKeySrc && resolvedLastKeySrc) break;
+        }
+
+        if (!resolvedIdKeySrc || !resolvedFirstKeySrc || !resolvedLastKeySrc) {
+          setCreatedClassFileError(`Columns matching 'ID Number', 'First Name', and 'Last Name' were not located.`);
+          return;
+        }
+
+        const parsedStudents: Student[] = jsonRows.map(r => {
+          const fName = String(r[resolvedFirstKeySrc] || '').trim();
+          const lName = String(r[resolvedLastKeySrc] || '').trim();
+          return {
+            id: String(r[resolvedIdKeySrc] || '').trim(),
+            firstName: fName,
+            lastName: lName,
+            fullName: `${fName} ${lName}`
+          };
+        }).filter(st => st.id && st.firstName);
+
+        if (parsedStudents.length === 0) {
+          setCreatedClassFileError("Failed to parse valid student records containing names and ID numbers.");
+          return;
+        }
+
+        const sortedStudents = parsedStudents.sort((a, b) => 
+          a.firstName.localeCompare(b.firstName)
+        );
+
+        setCreatedClassStudents(sortedStudents);
+        setCreatedClassFileSuccess(`Successfully recognized ${sortedStudents.length} student records from file.`);
+      } catch (err: any) {
+        setCreatedClassFileError(`Error parsing file: ${err?.message || 'Unsupported format'}`);
+      }
+    };
+    reader.readAsBinaryString(file);
+  };
+
+  const handleModalRosterDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleModalRosterDragLeave = () => {
+    setIsDragOver(false);
+  };
+
+  const handleModalRosterDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      processModalRosterFile(file);
+    }
+  };
+
+  const handleModalRosterSeedMock = () => {
+    const mockList = [
+      { id: "101", firstName: "Sophia", lastName: "Alvarez", fullName: "Sophia Alvarez" },
+      { id: "102", firstName: "Benjamin", lastName: "Chen", fullName: "Benjamin Chen" },
+      { id: "103", firstName: "Emma", lastName: "Dmitriev", fullName: "Emma Dmitriev" },
+      { id: "9001", firstName: "James", lastName: "Bond", fullName: "James Bond" },
+      { id: "404", firstName: "Ada", lastName: "Lovelace", fullName: "Ada Lovelace" }
+    ];
+    setCreatedClassStudents(mockList);
+    setCreatedClassFileSuccess("Successfully loaded 5 mock students.");
   };
 
   // Deletion of the active Class Section
@@ -1167,96 +1304,128 @@ export default function App() {
       <div className="h-1 bg-red-500 w-full" id="streamlit-accent-line"></div>
 
       {/* Header Banner */}
-      <header className="bg-white border-b border-slate-200 px-6 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4" id="streamlit-header">
-        <div className="flex items-center gap-3">
+      <header className="bg-[#f3f4f6]/90 backdrop-blur-md border-b border-slate-200/80 px-6 py-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4" id="streamlit-header">
+        <div className="flex items-center gap-3.5">
           <button 
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="p-2 hover:bg-slate-100 rounded-lg text-slate-600 transition-colors mr-1 cursor-pointer flex items-center justify-center border border-slate-200 shadow-sm"
+            className="p-3 bg-white hover:bg-slate-100 rounded-full text-slate-700 transition-all cursor-pointer flex items-center justify-center border border-slate-200 shadow-3xs active:scale-95"
             id="toggle-sidebar-hamburger"
-            title={isSidebarOpen ? "Hide Sidebar Settings" : "Show Sidebar Settings"}
+            title={isSidebarOpen ? "Minimize Navigation Drawer" : "Expand Navigation Drawer"}
           >
             <Menu className="h-5 w-5" />
           </button>
-          <div className="p-2 bg-red-50 py-2.5 rounded text-red-500">
-            <GraduationCap className="h-7 w-7" />
+          
+          <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-2xl border border-indigo-100/50 shadow-3xs">
+            <GraduationCap className="h-6 w-6" />
           </div>
+
           <div>
-            <h1 className="text-xl font-bold text-slate-900 tracking-tight">Streamlit Class Operations Panel</h1>
-            <p className="text-xs text-slate-500">Dual Execution: Live Interactive Applet + Pure Python Source Exporter</p>
+            <h1 className="text-lg md:text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
+              Class Operations Hub
+            </h1>
+            <p className="text-[11px] font-medium text-slate-500 leading-none mt-1">Dual Runtime Engine: Python st.session_state & Interactive Preview</p>
           </div>
         </div>
         
-        <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-2.5 flex-wrap">
           <button 
             onClick={() => setActiveTab(activeTab === 'code' ? 'students' : 'code')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors border ${
+            className={`flex items-center gap-2 px-4.5 py-2 text-xs font-bold rounded-full transition-all border shadow-3xs cursor-pointer select-none active:scale-95 ${
               activeTab === 'code' 
-                ? 'bg-amber-500 text-white border-amber-500' 
-                : 'bg-white text-slate-700 hover:bg-slate-100 border-slate-300'
+                ? 'bg-indigo-600 text-white border-indigo-600' 
+                : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-205'
             }`}
             id="toggle-source-code-btn"
           >
             <Code className="h-3.5 w-3.5" />
-            {activeTab === 'code' ? 'Back to Class App' : 'View streamlit app.py Code'}
+            {activeTab === 'code' ? 'Back to Class App' : 'View Python Streamlit Code'}
           </button>
           
-          <span className="inline-flex bg-slate-100 text-slate-600 font-mono text-[10px] uppercase font-bold items-center px-2 py-1 rounded border border-slate-200 gap-1">
-            <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping"></span>
-            st.session_state is active
+          <span className="inline-flex bg-emerald-50 text-emerald-800 font-mono text-[10px] uppercase font-bold items-center px-3 py-1.5 rounded-full border border-emerald-150 gap-1.5 shadow-3xs select-none">
+            <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
+            st.session_state on
           </span>
         </div>
       </header>
 
       {/* Interface workspace */}
-      <div className="flex-1 flex flex-col lg:flex-row" id="streamlit-workspace">
+      <div className="flex-1 flex flex-[#e0e2eb] lg:flex-row relative" id="streamlit-workspace">
+        
+        {/* Mobile slide-out overlay backdrop */}
+        {isSidebarOpen && (
+          <div 
+            onClick={() => setIsSidebarOpen(false)}
+            className="fixed inset-0 bg-slate-900/40 z-40 lg:hidden backdrop-blur-3xs transition-opacity duration-300"
+            id="sidebar-mobile-backdrop"
+          />
+        )}
+
         {/* SIDEBAR WIDGET PANELS */}
-        <aside className={`${isSidebarOpen ? 'flex' : 'hidden'} w-full lg:w-80 bg-white border-r border-slate-200 p-5 flex-col shrink-0 gap-6`} id="streamlit-sidebar">
+        <aside className={`
+          fixed inset-y-0 left-0 z-50 w-80 bg-slate-50 p-5 flex flex-col shrink-0 gap-5 border-r border-slate-200 shadow-xl overflow-y-auto transition-transform duration-300
+          lg:static lg:translate-x-0 lg:shadow-none lg:w-80 lg:flex lg:border-r lg:border-slate-200
+          ${isSidebarOpen ? 'translate-x-0 flex' : '-translate-x-full lg:hidden hidden'}
+        `} id="streamlit-sidebar">
           
+          {/* Mobile close button drawer header */}
+          <div className="flex items-center justify-between lg:hidden border-b border-slate-200 pb-3" id="sidebar-drawer-mobile-header">
+            <span className="text-sm font-bold text-slate-800 tracking-tight flex items-center gap-1.5">
+              <GraduationCap className="h-5 w-5 text-indigo-600" />
+              Navigation Panel
+            </span>
+            <button
+              onClick={() => setIsSidebarOpen(false)}
+              className="p-1.5 hover:bg-slate-200 rounded-full text-slate-500 border border-slate-200 transition-colors cursor-pointer"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
           {/* Firebase Sync Widget */}
-          <div className="bg-slate-50/80 p-3.5 rounded-xl border border-slate-200 shadow-3xs flex flex-col gap-3">
+          <div className="bg-slate-100 p-4 rounded-3xl border border-slate-200 shadow-3xs flex flex-col gap-3">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-extrabold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+              <span className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
                 <Cloud className={`h-4 w-4 ${user ? 'text-indigo-600' : 'text-slate-400'}`} />
-                Cloud Database Sync
+                Cloud Database
               </span>
               
               {user && (
-                <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold ${
-                  isSyncing ? 'bg-amber-50 text-amber-700 animate-pulse' : 'bg-emerald-50 text-emerald-700'
+                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-bold ${
+                  isSyncing ? 'bg-amber-100 text-amber-800 animate-pulse' : 'bg-emerald-100 text-emerald-800'
                 }`}>
                   <span className={`w-1 h-1 rounded-full mr-1 ${isSyncing ? 'bg-amber-500 animate-ping' : 'bg-emerald-500'}`} />
-                  {isSyncing ? "Syncing..." : "Synced"}
+                  {isSyncing ? "Syncing..." : "Live"}
                 </span>
               )}
             </div>
 
             {authLoading ? (
-              <div className="flex items-center gap-2 text-xs text-slate-400 font-medium">
-                <RefreshCw className="h-3 w-3 animate-spin text-slate-500" />
-                <span>Checking cloud sync...</span>
+              <div className="flex items-center gap-2 text-xs text-slate-400 font-medium py-1">
+                <RefreshCw className="h-3 w-3 animate-spin text-indigo-500" />
+                <span>Checking credentials...</span>
               </div>
             ) : user ? (
               <div className="flex flex-col gap-2">
-                <div className="text-[11px] text-slate-500 bg-white p-2.5 rounded-lg border border-slate-150 flex flex-col gap-1 shadow-3xs">
+                <div className="text-[11px] text-slate-600 bg-white p-2.5 rounded-2xl border border-slate-200 flex flex-col gap-1 shadow-3xs">
                   <div className="font-semibold text-slate-800 truncate flex items-center gap-1.5" title={user.email || ""}>
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                    <span className="truncate">{user.displayName || user.email?.split('@')[0] || "Logged In"}</span>
+                    <span className="truncate">{user.displayName || user.email?.split('@')[0] || "Professor"}</span>
                   </div>
                   <div className="text-[10px] text-slate-400 truncate font-mono">{user.email}</div>
                 </div>
 
                 <button
                   onClick={handleSignOut}
-                  className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 hover:border-rose-300 text-rose-700 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-3xs"
+                  className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-rose-50 hover:bg-rose-100 border border-rose-150 hover:border-rose-200 text-rose-700 rounded-full text-xs font-bold transition-all cursor-pointer shadow-3xs"
                 >
                   <LogOut className="h-3.5 w-3.5" />
-                  Sign Out / Disconnect
+                  Sign Out
                 </button>
               </div>
             ) : (
               <form onSubmit={handlePasswordSignIn} className="flex flex-col gap-2.5">
-                <p className="text-[11px] text-slate-500 leading-relaxed font-semibold">
-                  Sign in to keep your changes synced across all devices and browsers (work and home PCs).
+                <p className="text-[11px] text-slate-500 leading-normal font-medium">
+                  Connect cloud database to access your class data from any device securely.
                 </p>
 
                 <div className="flex flex-col gap-1 text-[11px]">
@@ -1266,7 +1435,7 @@ export default function App() {
                     value={usernameInput}
                     onChange={(e) => setUsernameInput(e.target.value)}
                     placeholder="e.g. workshop2"
-                    className="w-full text-xs px-2.5 py-1.5 rounded border border-slate-200 bg-white shadow-3xs focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                    className="w-full text-xs px-3 py-2 rounded-xl border border-slate-350 bg-white shadow-3xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20 font-mono"
                   />
                 </div>
 
@@ -1277,24 +1446,24 @@ export default function App() {
                     value={passwordInput}
                     onChange={(e) => setPasswordInput(e.target.value)}
                     placeholder="Password"
-                    className="w-full text-xs px-2.5 py-1.5 rounded border border-slate-200 bg-white shadow-3xs focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                    className="w-full text-xs px-3 py-2 rounded-xl border border-slate-350 bg-white shadow-3xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20 font-mono"
                   />
                 </div>
 
                 <button
                   type="submit"
                   disabled={isSyncing}
-                  className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] text-white rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs border border-indigo-700 mt-1 disabled:opacity-50"
+                  className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-750 active:scale-[0.98] text-white rounded-full text-xs font-bold transition-all cursor-pointer shadow-sm border border-indigo-700 mt-1 disabled:opacity-50"
                 >
                   {isSyncing ? (
                     <RefreshCw className="h-3.5 w-3.5 animate-spin" />
                   ) : (
                     <LogIn className="h-3.5 w-3.5" />
                   )}
-                  Sign In (Username & Password)
+                  Sign In
                 </button>
 
-                <div className="flex items-center gap-2 my-1">
+                <div className="flex items-center gap-2 my-0.5">
                   <div className="flex-1 h-px bg-slate-200"></div>
                   <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">or</span>
                   <div className="flex-1 h-px bg-slate-200"></div>
@@ -1303,112 +1472,88 @@ export default function App() {
                 <button
                   type="button"
                   onClick={handleGoogleSignIn}
-                  className="w-full flex items-center justify-center gap-2 px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-semibold transition-all cursor-pointer shadow-3xs border border-slate-200"
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 rounded-full text-xs font-semibold transition-all cursor-pointer shadow-3xs border border-slate-200"
                 >
                   <LogIn className="h-3 w-3 text-slate-500" />
-                  Sign In with Google
+                  Google Integration
                 </button>
               </form>
             )}
 
             {syncErrorMessage && (
-              <div className="bg-red-50 text-red-700 border border-red-100 p-2 rounded-lg text-[10.5px] font-medium leading-normal flex items-start gap-1.5">
+              <div className="bg-rose-50 text-rose-700 border border-rose-100 p-2.5 rounded-xl text-[10px] font-medium leading-normal flex items-start gap-1.5">
                 <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
                 <span>{syncErrorMessage}</span>
               </div>
             )}
           </div>
 
-          {/* Section Selector */}
-
+          {/* Active Section Selector */}
           <div className="flex flex-col gap-2" id="sidebar-class-selector">
-            <label className="text-xs font-extrabold text-slate-600 uppercase tracking-widest flex items-center justify-between">
-              Active Class Section
-              <span className="text-[10px] font-normal text-slate-400 capitalize">selected_class</span>
+            <label className="text-[10px] font-extrabold text-slate-500 uppercase tracking-widest flex items-center justify-between">
+              Working Class Section
+              <span className="text-[9px] font-bold text-slate-400 lowercase italic">selected_context</span>
             </label>
             
-            {isCreatingClass ? (
-              <form onSubmit={handleCreateClass} className="flex flex-col gap-2 bg-slate-50 p-2.5 rounded-lg border border-slate-200">
-                <span className="text-xs font-semibold text-slate-700">Enter Class Name:</span>
-                <input 
-                  type="text" 
-                  value={newClassNameInput}
-                  onChange={e => setNewClassNameInput(e.target.value)}
-                  placeholder="e.g. Physics 301" 
-                  className="w-full text-xs px-2.5 py-1.5 rounded border border-slate-300 bg-white shadow-sm focus:outline-none focus:ring-1 focus:ring-red-500"
-                  autoFocus
-                />
-                <div className="flex items-center gap-2 justify-end">
-                  <button 
-                    type="button" 
-                    onClick={() => setIsCreatingClass(false)}
-                    className="text-[10px] text-slate-500 px-2 py-1 hover:bg-slate-100 rounded"
-                  >
-                    Cancel
-                  </button>
-                  <button 
-                    type="submit" 
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] px-2.5 py-1 rounded font-semibold"
-                  >
-                    Create
-                  </button>
-                </div>
-              </form>
-            ) : (
-              <div className="flex gap-1.5">
-                <select
-                  value={activeClassName}
-                  onChange={e => {
-                    setActiveClassName(e.target.value);
-                    setConfirmDeleteClass(false);
-                  }}
-                  className="flex-1 text-sm bg-slate-50 border border-slate-300 rounded-lg p-2 focus:ring-1 focus:ring-red-500 outline-none text-slate-800 font-medium"
-                >
-                  {classes.map(c => (
-                    <option key={c.name} value={c.name}>{c.name}</option>
-                  ))}
-                </select>
-                <button
-                  onClick={() => setIsCreatingClass(true)}
-                  className="p-2 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-lg transition-colors flex items-center justify-center"
-                  title="Create New Class"
-                  id="create-new-class-sidebar-btn"
-                >
-                  <Plus className="h-4 w-4" />
-                </button>
-              </div>
-            )}
-            <p className="text-[10px] text-slate-400 font-mono">Current Roster size: {activeClass.students.length} students</p>
+            <div className="flex gap-2">
+              <select
+                value={activeClassName}
+                onChange={e => {
+                  setActiveClassName(e.target.value);
+                  setConfirmDeleteClass(false);
+                }}
+                className="flex-1 text-xs bg-white border border-slate-250 rounded-xl p-2.5 focus:ring-2 focus:ring-indigo-500/20 outline-none text-slate-800 font-semibold cursor-pointer shadow-3xs"
+              >
+                {classes.map(c => (
+                  <option key={c.name} value={c.name}>{c.name}</option>
+                ))}
+              </select>
+              <button
+                onClick={() => {
+                  setNewClassNameInput('');
+                  setCreatedClassStudents([]);
+                  setCreatedClassFileError(null);
+                  setCreatedClassFileSuccess(null);
+                  setIsCreatingClass(true);
+                }}
+                className="p-3 bg-indigo-650 hover:bg-indigo-750 text-white rounded-xl transition-all flex items-center justify-center cursor-pointer shadow-sm active:scale-95"
+                title="Create New Class (with optional import)"
+                id="create-new-class-sidebar-btn"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-400 font-mono pl-1">Roster size: {activeClass.students.length} students enrolled</p>
           </div>
 
           {/* Delete Active Section Controller */}
           {classes.length > 1 && (
-            <div className="flex justify-end -mt-3.5" id="sidebar-delete-class-box">
+            <div className="flex justify-start px-0.5 -mt-2" id="sidebar-delete-class-box">
               {!confirmDeleteClass ? (
                 <button
                   onClick={() => setConfirmDeleteClass(true)}
-                  className="inline-flex items-center gap-1 text-[10px] text-slate-400 hover:text-rose-600 transition-colors font-medium border border-slate-100 hover:border-slate-200 px-2 py-0.5 rounded bg-slate-50/50"
+                  className="inline-flex items-center gap-1 text-[10px] text-slate-400 hover:text-rose-600 transition-colors font-medium hover:underline bg-transparent"
                 >
                   <Trash2 className="h-2.5 w-2.5" />
                   Delete active section
                 </button>
               ) : (
-                <div className="flex flex-col gap-1.5 p-2 rounded-md bg-slate-50 border border-slate-200 text-left w-full">
-                  <p className="text-[9px] text-slate-600 leading-tight">
-                    Confirm clearing <strong>'{activeClass.name}'</strong>? All attendance and grades will be deleted.
+                <div className="flex flex-col gap-1.5 p-2.5 rounded-2xl bg-amber-50 border border-amber-200 text-left w-full shadow-3xs">
+                  <p className="text-[10px] text-amber-800 leading-tight font-medium">
+                    Are you sure you want to delete <strong>'{activeClass.name}'</strong>? This cannot be undone.
                   </p>
                   <div className="flex items-center gap-1.5 justify-end">
                     <button
                       onClick={() => setConfirmDeleteClass(false)}
-                      className="text-[9px] bg-white border border-slate-200 rounded text-slate-500 px-1.5 py-0.5 hover:bg-slate-100 shrink-0"
+                      className="text-[9px] bg-white border border-slate-200 rounded text-slate-500 px-2 py-0.5 hover:bg-slate-100"
                     >
                       Cancel
                     </button>
                     <button
                       onClick={handleDeleteActiveSection}
-                      className="text-[9px] bg-rose-600 text-white rounded px-2 py-0.5 hover:bg-rose-700 font-bold shrink-0 shadow-xs"
+                      className="text-[9px] bg-rose-600 text-white rounded px-2.5 py-0.5 hover:bg-rose-700 font-bold shadow-xs"
                     >
-                      Yes, Delete
+                      Delete
                     </button>
                   </div>
                 </div>
@@ -1416,89 +1561,149 @@ export default function App() {
             </div>
           )}
 
-          <hr className="border-slate-100" />
+          {/* GLOBAL STUDENT SEARCH (Moved to hamburger sidebar) */}
+          <div className="flex flex-col gap-2 bg-slate-100 p-4 rounded-3xl border border-slate-200 shadow-3xs" id="sidebar-global-student-search">
+            <div className="flex items-center justify-between pb-0.5">
+              <span className="text-[11px] font-black text-slate-655 uppercase tracking-wide flex items-center gap-1.5">
+                <Search className="h-3.5 w-3.5 text-indigo-600 font-bold" />
+                Global Search
+              </span>
+              {globalSearchQuery && (
+                <button 
+                  onClick={() => setGlobalSearchQuery('')}
+                  className="text-[10px] text-indigo-600 hover:text-indigo-805 font-bold transition-all"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
 
-          {/* Roster Ingestion Upload */}
-          <div className="flex flex-col gap-2" id="sidebar-roster-uploader">
-            <h3 className="text-xs font-extrabold text-slate-600 uppercase tracking-widest flex items-center gap-1">
-              <Upload className="h-3 w-3 text-red-500" />
-              Upload Student Roster
-            </h3>
-            <p className="text-[10.5px] text-slate-500 leading-normal">
-              Accepts .csv or .xlsx with 'First Name', 'Last Name', and 'ID Number'.
-            </p>
-            
-            <label className="border-2 border-dashed border-slate-200 hover:border-red-300 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-colors bg-slate-50 hover:bg-red-50">
-              <input 
-                type="file" 
-                accept=".csv, .xlsx" 
-                onChange={handleRosterFileUpload} 
-                className="hidden" 
+            <div className="relative">
+              <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                <Search className="h-3.5 w-3.5" />
+              </span>
+              <input
+                type="text"
+                value={globalSearchQuery}
+                onChange={e => setGlobalSearchQuery(e.target.value)}
+                placeholder="Type Student Name or ID..."
+                className="w-full pl-9 pr-3 py-2 text-xs bg-white border border-slate-300 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 text-slate-800 placeholder-slate-400 font-medium transition-all"
               />
-              <FileSpreadsheet className="h-6 w-6 text-slate-400 mb-1.5" />
-              <span className="text-xs font-semibold text-slate-700">Choose file or drag here</span>
-              <span className="text-[9.5px] text-slate-400 mt-1">Strips outer spacing and title-cases</span>
-            </label>
+            </div>
 
-            {fileError && (
-              <div className="mt-1.5 text-[10px] bg-rose-50 text-rose-700 p-2 rounded border border-rose-200 flex items-start gap-1">
-                <AlertCircle className="h-3 w-3 shrink-0 mt-0.5" />
-                <span>{fileError}</span>
+            {globalSearchQuery.trim() !== '' && (
+              <div className="max-h-80 overflow-y-auto mt-1 flex flex-col gap-2.5 divide-y divide-slate-200 border-t border-slate-200/50 pt-2" id="sidebar-search-results">
+                {globalSearchResults.length === 0 ? (
+                  <div className="py-5 text-center text-slate-400 text-[10.5px]">
+                    No students found matching <strong className="text-slate-600">"{globalSearchQuery}"</strong>
+                  </div>
+                ) : (
+                  globalSearchResults.map(({ student, classSection }) => {
+                    const assessments = classSection.assessments;
+                    const finalGrade = calculateFinalGrade(student.id, classSection);
+                    const colorInfo = getStudentHighlightClasses(student.color);
+                    const isExpanded = expandedSearchStudentId === `${classSection.name}-${student.id}`;
+                    
+                    return (
+                      <div key={`${classSection.name}-${student.id}`} className="pt-2.5 first:pt-0 flex flex-col gap-2">
+                        
+                        <div className="flex justify-between items-start gap-1">
+                          <div className="min-w-0">
+                            <span className="font-bold text-slate-905 block text-xs truncate leading-tight">{student.fullName}</span>
+                            <div className="flex items-center gap-1.5 flex-wrap mt-1">
+                              <span className="text-[9px] font-mono bg-white border border-slate-200 text-slate-500 px-1 py-0.2 rounded font-semibold">ID: {student.id}</span>
+                              <button
+                                onClick={() => {
+                                  setActiveClassName(classSection.name);
+                                  setIsSidebarOpen(false); // Close sidebar on mobile
+                                }}
+                                className="text-[9px] font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 px-1.5 py-0.2 rounded hover:bg-indigo-100 transition-all cursor-pointer border border-indigo-100"
+                              >
+                                {classSection.name}
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tight block">Grade</span>
+                            <span className="text-[10.5px] font-black text-emerald-805 bg-emerald-50 px-1.5 py-0.2 rounded-md border border-emerald-100 inline-block">{finalGrade.toFixed(1)}</span>
+                          </div>
+                        </div>
+
+                        {/* Interactive Highlights & Edit Grades panel inside Sidebar */}
+                        <div className="flex flex-col gap-1.5 bg-white p-2 rounded-xl border border-slate-200">
+                          <div className="flex items-center justify-between gap-1">
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => setStudentHighlightColor(student.id, classSection.name, 'none')}
+                                className="w-3.5 h-3.5 rounded-full border border-slate-350 flex items-center justify-center transition-all bg-slate-50 hover:bg-slate-200 cursor-pointer"
+                                title="Clear Highlight"
+                              >
+                                <X className="h-1.5 w-1.5 text-slate-500" />
+                              </button>
+                              {HIGHLIGHT_COLORS.map(c => (
+                                <button
+                                  key={c.id}
+                                  onClick={() => setStudentHighlightColor(student.id, classSection.name, c.id)}
+                                  className={`w-3.5 h-3.5 rounded-full ${c.dotClass} border border-black/10 transition-all hover:scale-115 cursor-pointer ${
+                                    student.color === c.id ? 'ring-2 ring-indigo-500 ring-offset-0 scale-105' : 'opacity-80'
+                                  }`}
+                                  title={`Highlight ${c.name}`}
+                                />
+                              ))}
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => setExpandedSearchStudentId(isExpanded ? null : `${classSection.name}-${student.id}`)}
+                              className="text-[9.5px] font-bold text-slate-500 hover:text-indigo-600 transition-colors inline-flex items-center gap-0.5 bg-slate-50 hover:bg-slate-100 px-2 py-0.5 border border-slate-200 rounded-md"
+                            >
+                              {isExpanded ? 'Hide Exam Scores' : 'Edit Exam Scores'}
+                            </button>
+                          </div>
+
+                          {isExpanded && (
+                            <div className="border-t border-slate-100 pt-2 mt-1 flex flex-col gap-1.5">
+                              {assessments.length === 0 ? (
+                                <span className="text-[9px] text-slate-400 italic text-center block py-1">No assessments in {classSection.name}</span>
+                              ) : (
+                                <div className="grid grid-cols-1 gap-1.5">
+                                  {assessments.map(ass => {
+                                    const score = classSection.grades[student.id]?.[ass.name] ?? 0;
+                                    return (
+                                      <div key={ass.name} className="flex items-center justify-between bg-slate-50 px-2 py-1 rounded-lg border border-slate-150">
+                                        <span className="text-[10px] text-slate-550 truncate font-semibold w-1/2">{ass.name}</span>
+                                        <div className="flex items-center gap-1 w-20">
+                                          <input
+                                            type="number"
+                                            min={0}
+                                            value={score}
+                                            onChange={e => handleScoreChangeCrossSection(student.id, ass.name, e.target.value, classSection.name)}
+                                            className="w-full text-right text-[11px] font-black bg-white border border-slate-300 rounded px-1.5 py-0.5 outline-none focus:border-indigo-500"
+                                          />
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             )}
-
-            {fileSuccess && (
-              <div className="mt-1.5 text-[10px] bg-emerald-50 text-emerald-800 p-2 rounded border border-emerald-100 flex items-start gap-1">
-                <Check className="h-3 w-3 shrink-0 mt-0.5 text-emerald-600" />
-                <span>{fileSuccess}</span>
-              </div>
-            )}
-
-            {/* Quick Demo Roster Seed helper */}
-            <button
-              onClick={() => {
-                setClasses(prev => prev.map(cl => {
-                  if (cl.name === activeClass.name) {
-                    return {
-                      ...cl,
-                      students: [
-                        { id: "101", firstName: "Sophia", lastName: "Alvarez", fullName: "Sophia Alvarez" },
-                        { id: "102", firstName: "Benjamin", lastName: "Chen", fullName: "Benjamin Chen" },
-                        { id: "103", firstName: "Emma", lastName: "Dmitriev", fullName: "Emma Dmitriev" },
-                        { id: "9001", firstName: "James", lastName: "Bond", fullName: "James Bond" },
-                        { id: "404", firstName: "Ada", lastName: "Lovelace", fullName: "Ada Lovelace" }
-                      ].sort((a,b)=> a.firstName.localeCompare(b.firstName)),
-                      attendance: {
-                        "101": { "2026-05-24": "Attended" },
-                        "102": { "2026-05-24": "Absent" },
-                        "103": { "2026-05-24": "Not Taken" },
-                        "9001": { "2026-05-24": "Attended" }
-                      },
-                      grades: {
-                        "101": { "Quiz 1": 95, "Midterm": 88 },
-                        "102": { "Quiz 1": 82, "Midterm": 79 },
-                        "103": { "Quiz 1": 90, "Midterm": 92 }
-                      }
-                    };
-                  }
-                  return cl;
-                }));
-                setFileSuccess("Seeded mock roster details to current working class!");
-              }}
-              className="text-[10px] text-slate-500 text-right hover:text-slate-800 hover:underline"
-              type="button"
-            >
-              ⚡ Fill Quick Mock Student Listing
-            </button>
           </div>
 
-          <hr className="border-slate-100" />
-
-          {/* Manual Add Input components */}
-          <div className="flex flex-col gap-3" id="sidebar-manual-add">
-            <h3 className="text-xs font-extrabold text-slate-600 uppercase tracking-widest flex items-center gap-1.5">
-              <UserPlus className="h-3.5 w-3.5 text-red-500" />
-              Add Student Record
+          {/* Manual Add Roster Input Form */}
+          <div className="bg-slate-100 p-4 rounded-3xl border border-slate-200 shadow-3xs flex flex-col gap-2.5" id="sidebar-manual-add">
+            <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+              <UserPlus className="h-3.5 w-3.5 text-indigo-550" />
+              Add Student
             </h3>
 
             <form onSubmit={handleManualAddStudent} className="flex flex-col gap-2">
@@ -1507,28 +1712,28 @@ export default function App() {
                 value={studentIdInput}
                 onChange={e => setStudentIdInput(e.target.value)}
                 placeholder="ID Number (e.g. 108)" 
-                className="w-full text-xs px-2.5 py-1.5 rounded border border-slate-300 bg-slate-50 text-slate-800"
+                className="w-full text-xs px-3 py-2 border border-slate-300 rounded-xl bg-white text-slate-800 outline-none focus:ring-1 focus:ring-indigo-500/20"
               />
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-1.5">
                 <input 
                   type="text" 
                   value={studentFirstInput}
                   onChange={e => setStudentFirstInput(e.target.value)}
                   placeholder="First Name" 
-                  className="w-full text-xs px-2.5 py-1.5 rounded border border-slate-300 bg-slate-50 text-slate-800"
+                  className="w-full text-xs px-3 py-2 border border-slate-300 rounded-xl bg-white text-slate-800 outline-none"
                 />
                 <input 
                   type="text" 
                   value={studentLastInput}
                   onChange={e => setStudentLastInput(e.target.value)}
                   placeholder="Last Name" 
-                  className="w-full text-xs px-2.5 py-1.5 rounded border border-slate-300 bg-slate-50 text-slate-800"
+                  className="w-full text-xs px-3 py-2 border border-slate-300 rounded-xl bg-white text-slate-800 outline-none"
                 />
               </div>
 
               <button
                 type="submit"
-                className="w-full bg-slate-800 hover:bg-slate-900 border border-slate-900 text-white font-bold text-xs py-2 rounded-lg transition-colors cursor-pointer"
+                className="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs py-2 rounded-full transition-all cursor-pointer shadow-3xs active:scale-[0.98]"
                 id="add-student-btn-sidebar"
               >
                 Add Student to Roster
@@ -1536,64 +1741,61 @@ export default function App() {
             </form>
 
             {studentAddError && (
-              <div className="text-[10px] text-rose-700 bg-rose-50 border border-rose-100 p-2 rounded">
+              <div className="text-[10px] text-rose-700 bg-rose-50 border border-rose-100 p-2 rounded-xl  ">
                 {studentAddError}
               </div>
             )}
 
             {studentAddSuccess && (
-              <div className="text-[10px] text-emerald-800 bg-emerald-50 border border-emerald-100 p-2 rounded">
+              <div className="text-[10px] text-emerald-800 bg-emerald-50 border border-emerald-100 p-2 rounded-xl font-medium">
                 {studentAddSuccess}
               </div>
             )}
           </div>
 
-          <hr className="border-slate-100" />
-
           {/* Remove Student Section */}
-          <div className="flex flex-col gap-3" id="sidebar-manual-removal">
-            <h3 className="text-xs font-extrabold text-slate-600 uppercase tracking-widest flex items-center gap-1.5">
-              <Trash2 className="h-3.5 w-3.5 text-red-500" />
+          <div className="bg-slate-100 p-4 rounded-3xl border border-slate-200 shadow-3xs flex flex-col gap-2.5" id="sidebar-manual-removal">
+            <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+              <Trash2 className="h-3.5 w-3.5 text-rose-650" />
               Remove Student
             </h3>
 
             {activeClass.students.length === 0 ? (
-              <p className="text-[10px] text-slate-400 italic leading-normal">
-                No active students registered to select from.
+              <p className="text-[10px] text-slate-400 italic leading-normal pl-0.5">
+                No active students registered.
               </p>
             ) : (
               <form onSubmit={handleRemoveStudentSubmit} className="flex flex-col gap-2">
                 <select
                   value={studentToDeleteId}
                   onChange={e => setStudentToDeleteId(e.target.value)}
-                  className="w-full text-xs bg-slate-50 border border-slate-300 rounded p-2 text-slate-700 focus:ring-1 outline-none font-medium"
+                  className="w-full text-xs bg-white border border-slate-300 rounded-xl p-2.5 text-slate-700 focus:ring-1 outline-none font-medium cursor-pointer"
                 >
-                  <option value="">-- Choose Student to Delete --</option>
+                  <option value="">-- Select Student --</option>
                   {activeClass.students.map(s => (
                     <option key={s.id} value={s.id}>{s.id} - {s.fullName}</option>
                   ))}
                 </select>
 
-                {/* Radio options */}
-                <div className="flex flex-col gap-1.5 mt-1 text-xs">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Scope of Deletion:</span>
-                  <label className="flex items-center gap-2 text-slate-700 cursor-pointer">
+                <div className="flex flex-col gap-1 mt-0.5 text-xs">
+                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Scope:</span>
+                  <label className="flex items-center gap-2 text-slate-700 cursor-pointer text-[11px] font-medium leading-normal">
                     <input 
                       type="radio" 
                       name="deletionScope" 
                       checked={deletionScope === 'current'}
                       onChange={() => setDeletionScope('current')}
-                      className="accent-slate-800" 
+                      className="accent-slate-800 cursor-pointer" 
                     />
                     <span>Remove from current class section</span>
                   </label>
-                  <label className="flex items-center gap-2 text-slate-700 cursor-pointer">
+                  <label className="flex items-center gap-2 text-slate-700 cursor-pointer text-[11px] font-medium leading-normal">
                     <input 
                       type="radio" 
                       name="deletionScope" 
                       checked={deletionScope === 'all'}
                       onChange={() => setDeletionScope('all')}
-                      className="accent-slate-800" 
+                      className="accent-slate-800 cursor-pointer" 
                     />
                     <span>Remove from ALL classes globally</span>
                   </label>
@@ -1602,10 +1804,10 @@ export default function App() {
                 <button
                   type="submit"
                   disabled={!studentToDeleteId}
-                  className={`w-full text-xs font-bold py-2 rounded transition-colors flex items-center justify-center gap-1 border ${
+                  className={`w-full text-xs font-bold py-2 rounded-full transition-all flex items-center justify-center gap-1 border shadow-3xs ${
                     studentToDeleteId 
-                      ? 'bg-rose-600 hover:bg-rose-700 text-white border-rose-700 cursor-pointer' 
-                      : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                      ? 'bg-rose-600 hover:bg-rose-750 text-white border-rose-700 cursor-pointer active:scale-95' 
+                      : 'bg-slate-200 text-slate-400 border-slate-250 cursor-not-allowed'
                   }`}
                   id="delete-student-submit-btn"
                 >
@@ -1623,81 +1825,75 @@ export default function App() {
             )}
           </div>
 
-          <hr className="border-slate-100" />
-
-          {/* Export Data section in sidebar */}
-          <div className="mt-auto pt-2 border-t border-slate-100 flex flex-col gap-3" id="sidebar-exports">
-            <h3 className="text-xs font-extrabold text-slate-600 uppercase tracking-widest flex items-center gap-1">
-              <Download className="h-3 w-3 text-red-500" />
+          {/* Export Data Ledger System */}
+          <div className="bg-slate-100 p-4 rounded-3xl border border-slate-200 shadow-3xs flex flex-col gap-2.5 mt-auto" id="sidebar-exports">
+            <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+              <Download className="h-3.5 w-3.5 text-indigo-550" />
               Download Ledgers
             </h3>
             
             <div className="flex flex-col gap-2">
-              <span className="text-[9px] font-extrabold text-slate-400 tracking-wider uppercase">Active Class:</span>
+              <span className="text-[9px] font-bold text-slate-400 tracking-wider uppercase pl-0.5">Active Class:</span>
               <button
                 onClick={handleExportGrades}
                 disabled={activeClass.students.length === 0}
-                className={`w-full text-xs font-semibold py-2 px-3 rounded-lg border text-left flex items-center justify-between gap-2 shadow-xs transition-all ${
+                className={`w-full text-xs font-semibold py-2 px-3.5 rounded-xl border text-left flex items-center justify-between gap-1 shadow-3xs transition-all ${
                   activeClass.students.length > 0 
-                  ? 'bg-white hover:bg-slate-50 border-slate-200 text-slate-700 hover:text-black cursor-pointer'
-                  : 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed'
+                  ? 'bg-white hover:bg-slate-50 border-slate-250 text-slate-700 hover:text-indigo-650 cursor-pointer'
+                  : 'bg-slate-50 text-slate-450 border-slate-200 cursor-not-allowed'
                 }`}
                 id="export-grades-excel-sidebar"
               >
-                <span className="flex items-center gap-2">
-                  <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
-                  Download Grades (Excel)
+                <span className="flex items-center gap-2 truncate">
+                  <FileSpreadsheet className="h-4 w-4 text-emerald-600 shrink-0" />
+                  Grades Workbook (Excel)
                 </span>
-                <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
+                <ChevronRight className="h-3.5 w-3.5 text-slate-400 shrink-0" />
               </button>
 
               <button
                 onClick={handleExportAttendance}
                 disabled={activeClass.students.length === 0}
-                className={`w-full text-xs font-semibold py-2 px-3 rounded-lg border text-left flex items-center justify-between gap-2 shadow-xs transition-all ${
+                className={`w-full text-xs font-semibold py-2 px-3.5 rounded-xl border text-left flex items-center justify-between gap-1 shadow-3xs transition-all ${
                   activeClass.students.length > 0 
-                  ? 'bg-white hover:bg-slate-50 border-slate-200 text-slate-700 hover:text-black cursor-pointer'
-                  : 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed'
+                  ? 'bg-white hover:bg-slate-50 border-slate-250 text-slate-700 hover:text-indigo-650 cursor-pointer'
+                  : 'bg-slate-50 text-slate-450 border-slate-200 cursor-not-allowed'
                 }`}
                 id="export-attendance-excel-sidebar"
               >
-                <span className="flex items-center gap-2">
-                  <Calendar className="h-4 w-4 text-sky-600" />
-                  Download Attendance Log
+                <span className="flex items-center gap-2 truncate">
+                  <Calendar className="h-4 w-4 text-sky-600 shrink-0" />
+                  Attendance Log (Excel)
                 </span>
-                <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
+                <ChevronRight className="h-3.5 w-3.5 text-slate-400 shrink-0" />
               </button>
 
               {/* Merged Exports System */}
-              <span className="text-[9px] font-extrabold text-slate-400 tracking-wider uppercase mt-2">Combined All Classes (with 2 empty row breaks):</span>
+              <span className="text-[9px] font-bold text-slate-400 tracking-wider uppercase pl-0.5 mt-1">Cross-Section Consolidated:</span>
               <button
                 onClick={() => handleExportMerged('grades')}
-                className="w-full text-xs font-semibold py-2 px-3 rounded-lg border text-left flex items-center justify-between gap-2 shadow-xs bg-indigo-50 border-indigo-100 hover:bg-indigo-100 text-indigo-800 transition-all cursor-pointer"
+                className="w-full text-xs font-semibold py-2 px-3.5 rounded-xl border text-left flex items-center justify-between gap-1 shadow-3xs bg-white hover:bg-indigo-50/50 border-slate-250 text-indigo-750 hover:text-indigo-900 transition-all cursor-pointer"
                 id="export-merged-grades-sidebar"
               >
-                <span className="flex items-center gap-2">
-                  <FileSpreadsheet className="h-4 w-4 text-indigo-600" />
-                  Download Merged Grades
+                <span className="flex items-center gap-2 truncate">
+                  <FileSpreadsheet className="h-4 w-4 text-indigo-600 shrink-0" />
+                  Merged Grades (All)
                 </span>
-                <ChevronRight className="h-3.5 w-3.5 text-indigo-400" />
+                <ChevronRight className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
               </button>
 
               <button
                 onClick={() => handleExportMerged('attendance')}
-                className="w-full text-xs font-semibold py-2 px-3 rounded-lg border text-left flex items-center justify-between gap-2 shadow-xs bg-teal-50 border-teal-100 hover:bg-teal-100 text-teal-800 transition-all cursor-pointer"
+                className="w-full text-xs font-semibold py-2 px-3.5 rounded-xl border text-left flex items-center justify-between gap-1 shadow-3xs bg-white hover:bg-teal-50/50 border-slate-250 text-teal-750 hover:text-teal-900 transition-all cursor-pointer"
                 id="export-merged-attendance-sidebar"
               >
-                <span className="flex items-center gap-2">
-                  <Calendar className="h-4 w-4 text-teal-600" />
-                  Download Merged Attendance
+                <span className="flex items-center gap-2 truncate">
+                  <Calendar className="h-4 w-4 text-teal-600 shrink-0" />
+                  Merged Attendance (All)
                 </span>
-                <ChevronRight className="h-3.5 w-3.5 text-teal-400" />
+                <ChevronRight className="h-3.5 w-3.5 text-teal-400 shrink-0" />
               </button>
             </div>
-            
-            <span className="text-[10px] text-slate-400 leading-normal">
-              Attendance exports keep text values representing status colors. Saved in xlsx.
-            </span>
           </div>
         </aside>
 
@@ -1821,214 +2017,45 @@ export default function App() {
                 </div>
               )}
 
-              {/* GLOBAL CROSS-SECTION STUDENT SEARCH CARD */}
-              <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-xs flex flex-col gap-4" id="global-student-search-container">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1">
-                  <div className="flex items-center gap-2">
-                    <span className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg">
-                      <Search className="h-4.5 w-4.5" />
-                    </span>
-                    <div>
-                      <h3 className="font-extrabold text-slate-900 text-sm md:text-md tracking-tight">Global Student Search</h3>
-                      <p className="text-[11px] text-slate-400">Search student directory across all sections and modify exam marks instantly</p>
-                    </div>
-                  </div>
-                  {globalSearchQuery && (
-                    <button 
-                      onClick={() => setGlobalSearchQuery('')}
-                      className="text-[10px] text-indigo-600 hover:text-indigo-800 font-bold bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-md transition-all self-start sm:self-auto cursor-pointer"
-                    >
-                      Clear Search
-                    </button>
-                  )}
-                </div>
-
-                <div className="relative">
-                  <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
-                    <Search className="h-4 w-4" />
-                  </span>
-                  <input
-                    type="text"
-                    value={globalSearchQuery}
-                    onChange={e => setGlobalSearchQuery(e.target.value)}
-                    placeholder="Type Student Name or ID (e.g. Liam, Chen, or 105) to search all sections..."
-                    className="w-full pl-10 pr-4 py-2.5 text-xs md:text-sm bg-slate-50 border border-slate-300 rounded-xl outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 focus:bg-white text-slate-800 placeholder-slate-400 font-medium transition-all shadow-sm"
-                  />
-                </div>
-
-                {globalSearchQuery.trim() !== '' && (
-                  <div className="mt-1 flex flex-col gap-3">
-                    <div className="flex items-center justify-between border-b border-slate-100 pb-1">
-                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                        Search Results ({globalSearchResults.length} matches)
-                      </span>
-                    </div>
-
-                    {globalSearchResults.length === 0 ? (
-                      <div className="p-8 text-center bg-slate-50 border border-dashed rounded-xl text-slate-450 text-xs">
-                        No student directory registrations matching <strong className="text-slate-700">"{globalSearchQuery}"</strong> located in any class sections.
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {globalSearchResults.map(({ student, classSection }) => {
-                          const assessments = classSection.assessments;
-                          const finalGrade = calculateFinalGrade(student.id, classSection);
-                          const colorInfo = getStudentHighlightClasses(student.color);
-                          const cardBorder = student.color
-                            ? `border border-slate-200 border-l-[5px] ${colorInfo.border?.replace('border-l-4 ', '') || ''}`
-                            : 'border border-slate-200 hover:border-slate-350';
-
-                          return (
-                            <div 
-                              key={`${classSection.name}-${student.id}`} 
-                              className={`${colorInfo.bg || 'bg-slate-50/50 hover:bg-slate-50/80'} ${cardBorder} rounded-xl p-4 flex flex-col gap-3.5 relative transition-all shadow-xs`}
-                            >
-                              {/* Header details */}
-                              <div className="flex justify-between items-start gap-2">
-                                <div>
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <h4 className="font-extrabold text-slate-900 text-sm tracking-tight">{student.fullName}</h4>
-                                    <span className="text-[10px] font-mono text-slate-500 bg-white border border-slate-200 px-1.5 py-0.5 rounded font-bold">
-                                      ID: {student.id}
-                                    </span>
-                                  </div>
-                                  <div className="mt-1.5 flex flex-col gap-1.5">
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="text-[10px] text-slate-400 font-medium">Enrolled in:</span>
-                                      <button
-                                        onClick={() => {
-                                          setActiveClassName(classSection.name);
-                                          // Scroll view smooth to main ribbon
-                                          const ribbon = document.getElementById('main-ribbon');
-                                          if (ribbon) ribbon.scrollIntoView({ behavior: 'smooth' });
-                                        }}
-                                        className="text-[10.5px] font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2 py-0.5 rounded transition-all cursor-pointer inline-flex items-center gap-0.5"
-                                        title="Click to jump to this class section"
-                                      >
-                                        {classSection.name}
-                                        <ChevronRight className="h-3 w-3" />
-                                      </button>
-                                    </div>
-                                    
-                                    <div className="flex items-center gap-1.5 mt-0.5">
-                                      <span className="text-[10px] text-slate-400 font-bold">Highlight:</span>
-                                      <div className="flex items-center gap-1 bg-white p-1 rounded-full border border-slate-200/60 w-fit shadow-3xs">
-                                        <button
-                                          onClick={() => setStudentHighlightColor(student.id, classSection.name, 'none')}
-                                          className={`w-3 h-3 rounded-full border border-slate-300 flex items-center justify-center transition-all bg-slate-50 hover:bg-slate-200 cursor-pointer ${
-                                            !student.color ? 'ring-2 ring-indigo-550 scale-105' : 'opacity-85'
-                                          }`}
-                                          title="Clear Highlight"
-                                        >
-                                          <X className="h-1 w-1 text-slate-500" />
-                                        </button>
-                                        {HIGHLIGHT_COLORS.map(c => {
-                                          const isSelected = student.color === c.id;
-                                          return (
-                                            <button
-                                              key={c.id}
-                                              onClick={() => setStudentHighlightColor(student.id, classSection.name, c.id)}
-                                              className={`w-3 h-3 rounded-full ${c.dotClass} border border-black/10 transition-all hover:scale-125 cursor-pointer ${
-                                                isSelected ? 'ring-2 ring-indigo-400 ring-offset-0 scale-110' : 'opacity-80'
-                                              }`}
-                                              title={`Highlight ${c.name}`}
-                                            />
-                                          );
-                                        })}
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                                <div className="text-right shrink-0">
-                                  <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Final Grade</div>
-                                  <div className="text-xs font-black text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-100 inline-block mt-0.5 shadow-3xs">
-                                    {finalGrade.toFixed(2)}
-                                  </div>
-                                </div>
-                              </div>
-
-                              <div className="border-t border-slate-100 pt-3">
-                                <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest block mb-2">
-                                  Exam & Assessment Scores
-                                </span>
-
-                                {assessments.length === 0 ? (
-                                  <p className="text-[10.5px] text-slate-400 italic bg-white p-2.5 rounded border border-slate-100 text-center">
-                                    No grading metrics defined for {classSection.name}.
-                                  </p>
-                                ) : (
-                                  <div className="grid grid-cols-2 gap-2">
-                                    {assessments.map(ass => {
-                                      const score = classSection.grades[student.id]?.[ass.name] ?? 0;
-                                      return (
-                                        <div key={ass.name} className="flex flex-col gap-1 bg-white p-2 rounded-lg border border-slate-200/80 shadow-3xs">
-                                          <div className="text-[10px] font-extrabold text-slate-500 truncate" title={ass.name}>
-                                            {ass.name}
-                                          </div>
-                                          <div className="flex items-center gap-1">
-                                            <input
-                                              type="number"
-                                              min={0}
-                                              value={score}
-                                              onChange={e => handleScoreChangeCrossSection(student.id, ass.name, e.target.value, classSection.name)}
-                                              className="w-full text-xs font-black text-slate-800 bg-slate-50 hover:bg-slate-100 focus:bg-white transition-all outline-none py-0.5 px-1.5 rounded border border-transparent focus:border-indigo-400"
-                                            />
-                                            <span className="text-[9px] text-slate-400 font-mono select-none">pts</span>
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* ST-STYLE SELECTABLE TABS */}
-              <div className="flex border-b border-slate-200 shrink-0 gap-1 overflow-x-auto bg-white p-1 rounded-xl shadow-xs" id="tabs-ribbon">
+              {/* MATERIAL DESIGN SEGMENTED TIMELINE TABS */}
+              <div className="flex bg-slate-100 p-1 rounded-full border border-slate-200 shrink-0 gap-1 overflow-x-auto max-w-full md:w-fit" id="tabs-ribbon">
                 <button
                   onClick={() => setActiveTab('students')}
-                  className={`flex items-center gap-2 px-4 py-3 text-xs md:text-sm font-bold rounded-lg border transition-all ${
+                  className={`flex items-center justify-center gap-2 px-5 py-2.5 text-xs md:text-sm font-bold rounded-full transition-all duration-200 select-none cursor-pointer whitespace-nowrap ${
                     activeTab === 'students'
-                    ? 'bg-slate-800 text-white border-slate-800 shadow-sm'
-                    : 'bg-transparent text-slate-600 border-transparent hover:bg-slate-50'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'bg-transparent text-slate-650 hover:bg-slate-205 hover:text-slate-800'
                   }`}
                   id="tab-btn-students"
                 >
-                  <Users className="h-4 w-4" />
-                  Students List
+                  <Users className="h-4 w-4 shrink-0" />
+                  <span>Student Roster</span>
                 </button>
 
                 <button
                   onClick={() => setActiveTab('attendance')}
-                  className={`flex items-center gap-2 px-4 py-3 text-xs md:text-sm font-bold rounded-lg border transition-all ${
+                  className={`flex items-center justify-center gap-2 px-5 py-2.5 text-xs md:text-sm font-bold rounded-full transition-all duration-200 select-none cursor-pointer whitespace-nowrap ${
                     activeTab === 'attendance'
-                    ? 'bg-slate-800 text-white border-slate-800 shadow-sm'
-                    : 'bg-transparent text-slate-600 border-transparent hover:bg-slate-50'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'bg-transparent text-slate-650 hover:bg-slate-205 hover:text-slate-800'
                   }`}
                   id="tab-btn-attendance"
                 >
-                  <CalendarCheck className="h-4 w-4" />
-                  Attendance Registry
+                  <CalendarCheck className="h-4 w-4 shrink-0" />
+                  <span>Attendance Registry</span>
                 </button>
 
                 <button
                   onClick={() => setActiveTab('grades')}
-                  className={`flex items-center gap-2 px-4 py-3 text-xs md:text-sm font-bold rounded-lg border transition-all ${
+                  className={`flex items-center justify-center gap-2 px-5 py-2.5 text-xs md:text-sm font-bold rounded-full transition-all duration-200 select-none cursor-pointer whitespace-nowrap ${
                     activeTab === 'grades'
-                    ? 'bg-slate-800 text-white border-slate-800 shadow-sm'
-                    : 'bg-transparent text-slate-600 border-transparent hover:bg-slate-50'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'bg-transparent text-slate-650 hover:bg-slate-250 hover:text-slate-800'
                   }`}
                   id="tab-btn-grades"
                 >
-                  <GraduationCap className="h-4 w-4" />
-                  Academic Grades
+                  <GraduationCap className="h-4 w-4 shrink-0" />
+                  <span>Academic Grades</span>
                 </button>
               </div>
 
@@ -2351,6 +2378,148 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {/* GOOGLE MATERIAL DESIGN CLASS CREATION MODAL WITH ISOLATED INTEGRATED ROSTER IMPORT */}
+      {isCreatingClass && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in" id="class-creation-modal-overlay">
+          <div className="bg-white rounded-3xl p-6 md:p-8 max-w-lg w-full shadow-2xl flex flex-col gap-5 border border-slate-150 max-h-[90vh] overflow-y-auto transform scale-100 transition-all duration-300">
+            
+            <div className="flex items-center justify-between border-b border-indigo-50 pb-3.5 animate-none" id="modal-header">
+              <span className="text-base font-bold text-slate-900 tracking-tight flex items-center gap-1.5 font-sans">
+                <Plus className="h-5 w-5 text-indigo-600" />
+                Create New Class Section
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCreatingClass(false);
+                  setNewClassNameInput('');
+                  setCreatedClassStudents([]);
+                  setCreatedClassFileError(null);
+                  setCreatedClassFileSuccess(null);
+                }}
+                className="p-1.5 hover:bg-slate-100 rounded-full text-slate-400 border border-slate-200 transition-all cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateClass} className="flex flex-col gap-4">
+              
+              {/* Class Name Input */}
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Class Section Name</label>
+                <input
+                  type="text"
+                  value={newClassNameInput}
+                  onChange={e => setNewClassNameInput(e.target.value)}
+                  placeholder="e.g. Physics 301, Section B"
+                  className="w-full text-sm px-3.5 py-2.5 rounded-xl border border-slate-300 bg-white shadow-3xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 text-slate-800 transition-all"
+                  autoFocus
+                  required
+                />
+              </div>
+
+              {/* Roster File Import Box */}
+              <div className="flex flex-col gap-2 border-t border-slate-100 pt-4" id="modal-roster-uploader">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                    <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+                    Student Roster (Optional Spreadsheet)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleModalRosterSeedMock}
+                    className="text-[10px] text-indigo-600 hover:text-indigo-800 hover:underline font-bold transition-all cursor-pointer"
+                  >
+                    ⚡ Demo Student List
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-405 leading-normal">
+                  Upload spreadsheet roster or seed demo students to instantly populate the directory.
+                </p>
+
+                <div 
+                  onDragOver={handleModalRosterDragOver}
+                  onDragLeave={handleModalRosterDragLeave}
+                  onDrop={handleModalRosterDrop}
+                  className={`border-2 border-dashed rounded-2xl p-5 flex flex-col items-center justify-center text-center cursor-pointer transition-all ${
+                    isDragOver 
+                      ? 'border-indigo-500 bg-indigo-50/50 scale-[1.01]' 
+                      : 'border-slate-200 hover:border-indigo-300 bg-slate-50 hover:bg-indigo-50/30'
+                  }`}
+                >
+                  <input
+                    type="file"
+                    accept=".csv, .xlsx"
+                    onChange={handleModalRosterFileUpload}
+                    className="hidden"
+                    id="modal-roster-file-input"
+                  />
+                  <label htmlFor="modal-roster-file-input" className="w-full h-full cursor-pointer flex flex-col items-center">
+                    <Upload className="h-7 w-7 text-slate-400 mb-2" />
+                    <span className="text-xs font-bold text-slate-700">Choose file or drag and drop here</span>
+                    <span className="text-[10px] text-slate-400 mt-1">Accepts CSV or Excel workbooks</span>
+                  </label>
+                </div>
+
+                {/* Feedback state notifications inside modal */}
+                {createdClassFileError && (
+                  <div className="text-[10.5px] bg-rose-50 text-rose-700 p-2.5 rounded-xl border border-rose-150 flex items-start gap-1.5 mt-1.5">
+                    <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5 text-rose-600" />
+                    <span>{createdClassFileError}</span>
+                  </div>
+                )}
+
+                {createdClassFileSuccess && (
+                  <div className="text-[10.5px] bg-emerald-50 text-emerald-800 p-2.5 rounded-xl border border-emerald-100 flex items-start gap-1.5 mt-1.5 font-bold">
+                    <Check className="h-3.5 w-3.5 shrink-0 mt-0.5 text-emerald-600" />
+                    <span>{createdClassFileSuccess}</span>
+                  </div>
+                )}
+
+                {createdClassStudents.length > 0 && (
+                  <div className="mt-1.5 p-2.5 bg-indigo-50/30 rounded-xl border border-indigo-100/50 text-[11px] text-slate-600 overflow-hidden">
+                    <span className="font-bold text-slate-700 block border-b border-indigo-100/40 pb-1 mb-1.5">Import Preview:</span>
+                    <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                      {createdClassStudents.map(st => (
+                        <span key={st.id} className="inline-flex items-center bg-white border border-slate-200 px-2 py-0.5 rounded-full text-[10px] font-semibold text-slate-700 font-mono shadow-3xs">
+                          {st.firstName} ({st.id})
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Action buttons */}
+              <div className="flex items-center gap-2.5 justify-end mt-4 border-t border-slate-100 pt-4" id="modal-actions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsCreatingClass(false);
+                    setNewClassNameInput('');
+                    setCreatedClassStudents([]);
+                    setCreatedClassFileError(null);
+                    setCreatedClassFileSuccess(null);
+                  }}
+                  className="bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold px-4.5 py-2.5 rounded-full transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="bg-indigo-600 hover:bg-indigo-750 active:scale-[0.98] text-white text-xs font-bold px-5 py-2.5 rounded-full transition-all cursor-pointer shadow-md inline-flex items-center gap-1.5"
+                >
+                  <Plus className="h-4 w-4" />
+                  Create Class
+                </button>
+              </div>
+
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* footer credits */}
       <footer className="bg-slate-100 px-6 py-3 border-t border-slate-200 text-center text-[10px] text-slate-500 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2" id="streamlit-footer">
