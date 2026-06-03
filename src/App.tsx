@@ -351,6 +351,7 @@ export default function App() {
   const [syncErrorMessage, setSyncErrorMessage] = useState<string | null>(null);
   
   const lastFirestoreDataRef = useRef<string>('');
+  const isInitialDocFetched = useRef<boolean>(false);
 
   // 1. Listen for Authentication Changes
   useEffect(() => {
@@ -365,9 +366,11 @@ export default function App() {
   useEffect(() => {
     if (!user) {
       lastFirestoreDataRef.current = '';
+      isInitialDocFetched.current = false;
       return;
     }
 
+    isInitialDocFetched.current = false;
     setIsSyncing(true);
     setSyncErrorMessage(null);
 
@@ -378,9 +381,9 @@ export default function App() {
         const data = docSnap.data();
         if (data && Array.isArray(data.classes)) {
           const firestoreClassesStr = JSON.stringify(data.classes);
+          lastFirestoreDataRef.current = firestoreClassesStr;
           // Avoid setting state and causing infinite loops if data didn't actually change
           if (firestoreClassesStr !== JSON.stringify(classes)) {
-            lastFirestoreDataRef.current = firestoreClassesStr;
             setClasses(data.classes);
           }
         }
@@ -395,6 +398,7 @@ export default function App() {
             setSyncErrorMessage("Failed to sync initial roster to Firestore.");
           });
       }
+      isInitialDocFetched.current = true;
     }, (error) => {
       setIsSyncing(false);
       console.error("Firestore synchronizer error:", error);
@@ -410,6 +414,7 @@ export default function App() {
     localStorage.setItem('streamlit_class_sections', JSON.stringify(classes));
 
     if (!user) return;
+    if (!isInitialDocFetched.current) return; // Do not upload before receiving current firestore data!
 
     const currentClassesStr = JSON.stringify(classes);
     // If the state was updated locally and differs from last Firestore data, upload it!
@@ -434,8 +439,8 @@ export default function App() {
     }
   }, [classes, user]);
 
-  const [usernameInput, setUsernameInput] = useState('workshop2');
-  const [passwordInput, setPasswordInput] = useState('WorkShop2@Sections');
+  const [usernameInput, setUsernameInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
 
   const handlePasswordSignIn = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
