@@ -1047,34 +1047,16 @@ export default function App() {
         const shortIds = sortedStudents.filter(st => st.id.length <= 6);
         const normalIds = sortedStudents.filter(st => st.id.length > 6);
 
+        // Always set pendingImport so we can preview the full checklist, showcasing short IDs at the top as priority
+        setPendingImport({
+          className: activeClass.name,
+          normal: normalIds,
+          short: shortIds
+        });
         if (shortIds.length > 0) {
-          setPendingImport({
-            className: activeClass.name,
-            normal: normalIds,
-            short: shortIds
-          });
-          setFileSuccess("Verification check required for short student IDs.");
+          setFileSuccess(`Verification check required: Found ${shortIds.length} short student IDs. Previewing roster.`);
         } else {
-          // Direct commit
-          setClasses(prev => prev.map(cl => {
-            if (cl.name === activeClass.name) {
-              const nextAtt: any = {};
-              const nextGrades: any = {};
-              sortedStudents.forEach(st => {
-                nextAtt[st.id] = cl.attendance[st.id] || {};
-                nextGrades[st.id] = cl.grades[st.id] || {};
-              });
-
-              return {
-                ...cl,
-                students: sortedStudents,
-                attendance: nextAtt,
-                grades: nextGrades
-              };
-            }
-            return cl;
-          }));
-          setFileSuccess(`Successfully ingested offline roster! Parsed ${sortedStudents.length} entries sorted alphabetically.`);
+          setFileSuccess(`Previewing imported student roster containing ${sortedStudents.length} records.`);
         }
 
       } catch (err: any) {
@@ -1084,16 +1066,19 @@ export default function App() {
     reader.readAsBinaryString(file);
   };
 
-  // Commit Staged ID review checkboxes
+  // Commit Staging Roster with Checkbox Selection
   const handleConfirmPendingImport = () => {
     if (!pendingImport) return;
 
-    // Filter accepted short students
+    // Filter students based on what is checked
     const approvedShortStudents = pendingImport.short.filter(st => 
       selectedShortIds.includes(st.id)
     );
+    const approvedNormalStudents = pendingImport.normal.filter(st => 
+      selectedShortIds.includes(st.id)
+    );
 
-    const consolidatedList = [...pendingImport.normal, ...approvedShortStudents].sort((a, b) => 
+    const consolidatedList = [...approvedNormalStudents, ...approvedShortStudents].sort((a, b) => 
       a.firstName.localeCompare(b.firstName)
     );
 
@@ -1117,13 +1102,27 @@ export default function App() {
     }));
 
     setPendingImport(null);
-    setFileSuccess(`Successfully uploaded filtered roster containing ${consolidatedList.length} records.`);
+    setFileSuccess(`Successfully imported roster containing ${consolidatedList.length} records.`);
+  };
+
+  // Deselects all short IDs from check list instantly
+  const handleDeselectShortIDsChecklist = () => {
+    if (!pendingImport) return;
+    const shortIdsList = pendingImport.short.map(s => s.id);
+    setSelectedShortIds(prev => prev.filter(id => !shortIdsList.includes(id)));
+  };
+
+  // Selects all short and normal IDs in checklist instantly
+  const handleSelectAllChecklist = () => {
+    if (!pendingImport) return;
+    const allIds = [...pendingImport.short, ...pendingImport.normal].map(s => s.id);
+    setSelectedShortIds(allIds);
   };
 
   const handleDiscardPendingImportShortIds = () => {
     if (!pendingImport) return;
 
-    // Direct sort on normal entries
+    // Direct save with only normal entries (fully skip short IDs)
     const consolidatedList = [...pendingImport.normal].sort((a, b) => 
       a.firstName.localeCompare(b.firstName)
     );
@@ -1561,6 +1560,45 @@ export default function App() {
             </div>
           )}
 
+          {/* ROSTER INGESTION UPLOAD */}
+          <div className="flex flex-col gap-2 bg-slate-100 p-4 rounded-3xl border border-slate-200 shadow-3xs" id="sidebar-roster-uploader">
+            <div className="flex items-center gap-1.5">
+              <Upload className="h-3.5 w-3.5 text-indigo-650" />
+              <span className="text-[11px] font-black text-slate-700 uppercase tracking-wide">
+                Upload Student Roster
+              </span>
+            </div>
+            <p className="text-[10px] text-slate-500 leading-normal">
+              Accepts .csv or .xlsx with 'First Name', 'Last Name', and 'ID Number'.
+            </p>
+            
+            <label className="border border-dashed border-slate-350 hover:border-indigo-500 rounded-2xl p-3.5 flex flex-col items-center justify-center text-center cursor-pointer transition-all bg-white hover:bg-slate-50 shadow-3xs active:scale-[0.98]">
+              <input 
+                type="file" 
+                accept=".csv, .xlsx" 
+                onChange={handleRosterFileUpload} 
+                className="hidden" 
+              />
+              <FileSpreadsheet className="h-5 w-5 text-indigo-550 mb-1" />
+              <span className="text-xs font-bold text-slate-700">Choose file or drag here</span>
+              <span className="text-[9px] text-slate-400 mt-0.5">Scans & verifies short ID lengths</span>
+            </label>
+
+            {fileError && (
+              <div className="text-[10px] text-rose-700 bg-rose-50 border border-rose-100 p-2 rounded-xl flex items-start gap-1">
+                <AlertCircle className="h-3 w-3 shrink-0 mt-0.5 text-rose-600" />
+                <span>{fileError}</span>
+              </div>
+            )}
+
+            {fileSuccess && (
+              <div className="text-[10px] text-emerald-800 bg-emerald-50 border border-emerald-100 p-2 rounded-xl flex items-start gap-1">
+                <Check className="h-3 w-3 shrink-0 mt-0.5 text-emerald-600" />
+                <span>{fileSuccess}</span>
+              </div>
+            )}
+          </div>
+
           {/* GLOBAL STUDENT SEARCH (Moved to hamburger sidebar) */}
           <div className="flex flex-col gap-2 bg-slate-100 p-4 rounded-3xl border border-slate-200 shadow-3xs" id="sidebar-global-student-search">
             <div className="flex items-center justify-between pb-0.5">
@@ -1947,71 +1985,168 @@ export default function App() {
           ) : (
             <div className="flex flex-col gap-6" id="app-working-views">
               
-              {/* STAGED SHORT ID VERIFICATION CONTAINER */}
+              {/* STAGED ROSTER VERIFICATION & PREVIEW HUB */}
               {pendingImport && (
-                <div className="bg-amber-50 rounded-xl border border-amber-200 shadow-sm p-6 flex flex-col gap-4 animate-fade-in" id="short-id-compliance-container">
+                <div className={`rounded-xl border shadow-sm p-6 flex flex-col gap-5 animate-fade-in ${
+                  pendingImport.short.length > 0
+                    ? 'bg-amber-50 border-amber-200'
+                    : 'bg-indigo-50/50 border-indigo-150'
+                }`} id="short-id-compliance-container">
+                  
                   <div className="flex items-start gap-3">
-                    <AlertCircle className="h-6 w-6 text-amber-600 shrink-0 mt-0.5" />
+                    {pendingImport.short.length > 0 ? (
+                      <AlertCircle className="h-6 w-6 text-amber-600 shrink-0 mt-0.5" />
+                    ) : (
+                      <Check className="h-6 w-6 text-emerald-600 shrink-0 mt-0.5" />
+                    )}
                     <div>
-                      <h3 className="text-md font-bold text-amber-900 tracking-tight">
-                        Roster Verification Required: Short Student IDs Detected
+                      <h3 className={`text-md font-extrabold tracking-tight ${
+                        pendingImport.short.length > 0 ? 'text-amber-900' : 'text-slate-900'
+                      }`}>
+                        {pendingImport.short.length > 0 
+                          ? 'Roster Verification Required: Short Student IDs Detected' 
+                          : 'Roster Import Preview & Selection Checklist'
+                        }
                       </h3>
-                      <p className="text-xs text-amber-700 mt-1 leading-normal">
-                        We located student entries inside import with ID numbers consisting of <strong>6 or less digits</strong>.
-                        Choose which students you want to whitelist and keep in your roster. Deselected whitelists will be omitted:
+                      <p className={`text-xs mt-1 leading-normal ${
+                        pendingImport.short.length > 0 ? 'text-amber-700' : 'text-slate-500'
+                      }`}>
+                        {pendingImport.short.length > 0 
+                          ? 'We detected student records with short ID numbers (6 or less digits). Decide which candidates you wish to discard or whitelist in your class directory below:'
+                          : 'Review the list of students initialized from the uploading template. Choose what to keep and what to discard before committing:'
+                        }
                       </p>
                     </div>
                   </div>
 
-                  {/* Grid lists with checkbox whitelisting */}
-                  <div className="bg-white border border-amber-100 rounded-lg max-h-56 overflow-y-auto divide-y divide-slate-100">
-                    {pendingImport.short.map(st => {
-                      const isChecked = selectedShortIds.includes(st.id);
-                      return (
-                        <div key={st.id} className="flex items-center justify-between p-3 text-xs hover:bg-amber-50/50 transition-colors">
-                          <div className="flex items-center gap-3">
-                            <input 
-                              type="checkbox" 
-                              checked={isChecked}
-                              onChange={() => {
-                                if (isChecked) {
-                                  setSelectedShortIds(prev => prev.filter(x => x !== st.id));
-                                } else {
-                                  setSelectedShortIds(prev => [...prev, st.id]);
-                                }
-                              }}
-                              className="h-4 w-4 text-amber-600 focus:ring-amber-500 rounded border-slate-300 cursor-pointer"
-                            />
-                            <div>
-                              <span className="font-mono bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded font-semibold text-[10.5px]">ID: {st.id}</span>
-                              <span className="font-semibold text-slate-700 ml-2.5">{st.fullName}</span>
-                            </div>
-                          </div>
-                          <span className="text-[10px] text-slate-400 font-medium">({st.id.length} digits)</span>
+                  {/* Consolidated Checklist Preview Scrollbar Box */}
+                  <div className="bg-white border border-slate-200 rounded-xl max-h-72 overflow-y-auto divide-y divide-slate-100 shadow-3xs text-left">
+                    
+                    {/* PRIORITY SECTION: Short Student IDs */}
+                    {pendingImport.short.length > 0 && (
+                      <div>
+                        <div className="bg-amber-100/65 text-amber-950 font-bold px-3.5 py-2 text-[10px] uppercase tracking-wide flex items-center justify-between sticky top-0 z-10 border-b border-amber-200/55 backdrop-blur-xs">
+                          <span className="flex items-center gap-1">
+                            ⚠️ Priority Review: Short IDs ({pendingImport.short.length})
+                          </span>
+                          <span className="text-[9px] bg-amber-200 text-amber-900 font-bold px-1.5 py-0.5 rounded-md">
+                            Discard Recommendation
+                          </span>
                         </div>
-                      );
-                    })}
+                        <div className="divide-y divide-slate-100 bg-amber-50/15">
+                          {pendingImport.short.map(st => {
+                            const isChecked = selectedShortIds.includes(st.id);
+                            return (
+                              <div key={st.id} className="flex items-center justify-between p-3.5 text-xs hover:bg-amber-50/70 transition-colors">
+                                <div className="flex items-center gap-3">
+                                  <input 
+                                    type="checkbox" 
+                                    checked={isChecked}
+                                    id={`chk-import-${st.id}`}
+                                    onChange={() => {
+                                      if (isChecked) {
+                                        setSelectedShortIds(prev => prev.filter(x => x !== st.id));
+                                      } else {
+                                        setSelectedShortIds(prev => [...prev, st.id]);
+                                      }
+                                    }}
+                                    className="h-4.5 w-4.5 text-amber-600 focus:ring-amber-500 rounded border-slate-300 cursor-pointer"
+                                  />
+                                  <label htmlFor={`chk-import-${st.id}`} className="flex flex-col sm:flex-row sm:items-center gap-1.5 cursor-pointer select-none">
+                                    <span className="font-mono bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded font-black text-[10.5px]">ID: {st.id}</span>
+                                    <span className="font-bold text-slate-900">{st.fullName}</span>
+                                  </label>
+                                </div>
+                                <span className="text-[10px] text-amber-600 font-mono font-bold">⚠️ {st.id.length} digits</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* GENERAL SECTION: Normal Student Records */}
+                    {pendingImport.normal.length > 0 && (
+                      <div>
+                        <div className="bg-slate-55 text-slate-650 font-bold px-3.5 py-2 text-[10px] uppercase tracking-wide flex items-center justify-between sticky top-0 z-10 border-b border-slate-200 backdrop-blur-xs">
+                          <span>✅ General Roster List ({pendingImport.normal.length})</span>
+                          <span className="text-[9px] bg-slate-100 text-slate-500 font-bold px-1.5 py-0.5 rounded-md">
+                            Normal ID Formats
+                          </span>
+                        </div>
+                        <div className="divide-y divide-slate-100">
+                          {pendingImport.normal.map(st => {
+                            const isChecked = selectedShortIds.includes(st.id);
+                            return (
+                              <div key={st.id} className="flex items-center justify-between p-3.5 text-xs hover:bg-slate-50/50 transition-colors">
+                                <div className="flex items-center gap-3">
+                                  <input 
+                                    type="checkbox" 
+                                    checked={isChecked}
+                                    id={`chk-import-${st.id}`}
+                                    onChange={() => {
+                                      if (isChecked) {
+                                        setSelectedShortIds(prev => prev.filter(x => x !== st.id));
+                                      } else {
+                                        setSelectedShortIds(prev => [...prev, st.id]);
+                                      }
+                                    }}
+                                    className="h-4.5 w-4.5 text-indigo-600 focus:ring-indigo-500 rounded border-slate-300 cursor-pointer"
+                                  />
+                                  <label htmlFor={`chk-import-${st.id}`} className="flex flex-col sm:flex-row sm:items-center gap-1.5 cursor-pointer select-none">
+                                    <span className="font-mono bg-slate-100 text-slate-650 px-1.5 py-0.5 rounded font-bold text-[10.5px]">ID: {st.id}</span>
+                                    <span className="font-bold text-slate-850">{st.fullName}</span>
+                                  </label>
+                                </div>
+                                <span className="text-[10px] text-slate-400 font-mono">({st.id.length} digits)</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
                   </div>
 
-                  {/* Checkbox triggers control buttons */}
-                  <div className="flex items-center gap-3 flex-wrap">
+                  {/* Summary of checked items */}
+                  <div className="text-[11px] font-bold text-slate-500 flex items-center gap-1 px-1">
+                    <span>Selected to Keep:</span>
+                    <span className="text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-100">
+                      {selectedShortIds.length} of {pendingImport.short.length + pendingImport.normal.length} Students Active
+                    </span>
+                  </div>
+
+                  {/* Interactive Buttons Bar */}
+                  <div className="flex items-center gap-2.5 flex-wrap border-t border-slate-205/50 pt-3">
                     <button
                       onClick={handleConfirmPendingImport}
-                      className="bg-amber-600 hover:bg-amber-700 border border-amber-700 text-white font-bold text-xs px-4 py-2 rounded-lg shadow-sm transition-colors cursor-pointer"
+                      className="bg-indigo-600 hover:bg-indigo-750 text-white font-bold text-xs px-4.5 py-2.5 rounded-full shadow-md transition-all cursor-pointer active:scale-95 inline-flex items-center gap-1"
                     >
-                      Keep whitelisted ({selectedShortIds.length}) & Import All
+                      <span>Save & Complete Import ({selectedShortIds.length})</span>
                     </button>
+                    
+                    {pendingImport.short.length > 0 && (
+                      <button
+                        onClick={handleDeselectShortIDsChecklist}
+                        className="bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-250 text-xs font-bold px-4.5 py-2.5 rounded-full transition-all cursor-pointer"
+                        title="Unchecks all student records possessing 6 or less digits"
+                      >
+                        Deselect All Short IDs
+                      </button>
+                    )}
+
                     <button
-                      onClick={handleDiscardPendingImportShortIds}
-                      className="bg-white hover:bg-amber-100 border border-amber-200 text-amber-850 text-xs font-semibold px-4 py-2 rounded-lg transition-colors cursor-pointer"
+                      onClick={handleSelectAllChecklist}
+                      className="bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 text-xs font-bold px-4 py-2.5 rounded-full transition-all cursor-pointer"
                     >
-                      Discard All {pendingImport.short.length} Short IDs & Save Others
+                      Select All ({pendingImport.short.length + pendingImport.normal.length})
                     </button>
+
                     <button
                       onClick={() => setPendingImport(null)}
-                      className="bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-semibold px-4 py-2 rounded-lg transition-colors cursor-pointer"
+                      className="bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold px-4 py-2.5 rounded-full transition-colors cursor-pointer ml-auto"
                     >
-                      Abort Import
+                      Abort
                     </button>
                   </div>
                 </div>
@@ -2479,14 +2614,76 @@ export default function App() {
                 )}
 
                 {createdClassStudents.length > 0 && (
-                  <div className="mt-1.5 p-2.5 bg-indigo-50/30 rounded-xl border border-indigo-100/50 text-[11px] text-slate-600 overflow-hidden">
-                    <span className="font-bold text-slate-700 block border-b border-indigo-100/40 pb-1 mb-1.5">Import Preview:</span>
-                    <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
-                      {createdClassStudents.map(st => (
-                        <span key={st.id} className="inline-flex items-center bg-white border border-slate-200 px-2 py-0.5 rounded-full text-[10px] font-semibold text-slate-700 font-mono shadow-3xs">
-                          {st.firstName} ({st.id})
-                        </span>
-                      ))}
+                  <div className="mt-2 p-3 bg-amber-50 rounded-2xl border border-amber-200 text-xs text-amber-800 flex flex-col gap-2">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-amber-600" />
+                      <div>
+                        <span className="font-bold">Short Student IDs Detected:</span>
+                        <p className="text-[11px] leading-relaxed mt-0.5 text-amber-700">
+                          There are <strong className="text-amber-900">{createdClassStudents.filter(st => st.id.length <= 6).length} students</strong> with ID numbers consisting of 6 or less digits.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCreatedClassStudents(prev => prev.filter(st => st.id.length > 6));
+                          setCreatedClassFileSuccess("Omitted short ID numbers from roster template!");
+                        }}
+                        className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-3 py-1.5 rounded-xl text-[10px] shadow-3xs cursor-pointer transition-all active:scale-95"
+                      >
+                        Discard All Short IDs
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCreatedClassFileSuccess("Kept short ID records in roster.");
+                        }}
+                        className="bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 font-semibold px-3 py-1.5 rounded-xl text-[10px] shadow-3xs cursor-pointer transition-all"
+                      >
+                        Keep All
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {createdClassStudents.length > 0 && (
+                  <div className="mt-1.5 p-2.5 bg-indigo-50/30 rounded-xl border border-indigo-100/50 text-[11px] text-slate-600 overflow-hidden text-left">
+                    <div className="flex items-center justify-between border-b border-indigo-150 pb-1 mb-1.5">
+                      <span className="font-bold text-slate-700 block">Import Preview ({createdClassStudents.length}):</span>
+                      <button
+                        type="button"
+                        onClick={() => setCreatedClassStudents([])}
+                        className="text-[10px] text-rose-500 hover:text-rose-700 font-bold hover:underline"
+                      >
+                        Clear All
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto p-1 bg-white/50 rounded-lg">
+                      {createdClassStudents.map(st => {
+                        const isShort = st.id.length <= 6;
+                        return (
+                          <span 
+                            key={st.id} 
+                            className={`inline-flex items-center gap-1 bg-white border px-2 py-0.5 rounded-full text-[10px] font-semibold text-slate-700 font-mono shadow-3xs hover:bg-slate-50 transition-colors ${
+                              isShort ? 'border-amber-300 bg-amber-50/30 text-amber-900' : 'border-slate-205'
+                            }`}
+                          >
+                            <span>{st.firstName} ({st.id})</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCreatedClassStudents(prev => prev.filter(x => x.id !== st.id));
+                              }}
+                              className="p-0.5 rounded-full hover:bg-slate-200 text-slate-450 hover:text-slate-700 flex items-center justify-center cursor-pointer transition-colors"
+                              title="Discard student"
+                            >
+                              <X className="h-2 w-2" />
+                            </button>
+                          </span>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
