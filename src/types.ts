@@ -8,12 +8,14 @@ export interface Student {
 
 export interface Assessment {
   name: string;
-  weight: number; // e.g. 20
+  weight: number; // Percentage out of 100%
+  maxMark?: number; // Full mark of assessment (e.g. 20, 50, 100)
 }
 
 export interface ClassSection {
   name: string;
   students: Student[]; // Sorted alphabetically by firstName
+  attendanceDates?: string[]; // Preserves column ordering (newest next to names)
   // Indexed by student.id -> { dateString: status }
   attendance: {
     [studentId: string]: {

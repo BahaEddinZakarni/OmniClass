@@ -1,6 +1,6 @@
 {
-  "name": "Class Management App",
-  "description": "A Streamlit-styled student dashboard for roster curation, attendance tracking, and grading with full Excel data exporting capabilities.",
+  "name": "Omni Class",
+  "description": "Omni Class - Academic roster, attendance tracking, and grading dashboard with Excel data exporting capabilities.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
