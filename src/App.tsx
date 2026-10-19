@@ -1494,20 +1494,21 @@ export default function App() {
               <span className="text-[9px] font-bold text-slate-400 lowercase italic">selected_context</span>
             </label>
             
-            <div className="flex gap-2">
+            <div className="flex gap-2 items-center">
               <select
                 value={activeClassName}
                 onChange={e => {
                   setActiveClassName(e.target.value);
                   setConfirmDeleteClass(false);
                 }}
-                className="flex-1 text-xs bg-white border border-slate-250 rounded-xl p-2.5 focus:ring-2 focus:ring-indigo-500/20 outline-none text-slate-800 font-semibold cursor-pointer shadow-3xs"
+                className="flex-1 text-xs bg-white border border-slate-300 rounded-xl p-2.5 focus:ring-2 focus:ring-indigo-500/20 outline-none text-slate-800 font-semibold cursor-pointer shadow-3xs"
               >
                 {classes.map(c => (
                   <option key={c.name} value={c.name}>{c.name}</option>
                 ))}
               </select>
               <button
+                type="button"
                 onClick={() => {
                   setNewClassNameInput('');
                   setCreatedClassStudents([]);
@@ -1515,55 +1516,69 @@ export default function App() {
                   setCreatedClassFileSuccess(null);
                   setIsCreatingClass(true);
                 }}
-                className="p-3 bg-indigo-650 hover:bg-indigo-750 text-white rounded-xl transition-all flex items-center justify-center cursor-pointer shadow-sm active:scale-95"
+                className="w-10 h-10 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded-xl transition-all flex items-center justify-center cursor-pointer shadow-sm active:scale-95 shrink-0 border border-indigo-700"
                 title="Create New Class (with optional import)"
                 id="create-new-class-sidebar-btn"
+                aria-label="Add new class section"
               >
-                <Plus className="h-4 w-4" />
+                <Plus className="h-5 w-5 text-white" strokeWidth={2.5} />
               </button>
             </div>
             <p className="text-[10px] text-slate-400 font-mono pl-1">Roster size: {activeClass.students.length} students enrolled</p>
           </div>
 
           {/* Delete Active Section Controller */}
-          {classes.length > 1 && (
-            <div className="flex justify-start px-0.5 -mt-2" id="sidebar-delete-class-box">
-              {!confirmDeleteClass ? (
+          <div className="flex flex-col gap-2 pt-0.5" id="sidebar-delete-class-box">
+            {classes.length > 1 ? (
+              !confirmDeleteClass ? (
                 <button
+                  type="button"
                   onClick={() => setConfirmDeleteClass(true)}
-                  className="inline-flex items-center gap-1 text-[10px] text-slate-400 hover:text-rose-600 transition-colors font-medium hover:underline bg-transparent"
+                  className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-bold text-rose-700 bg-rose-100/90 hover:bg-rose-200 active:bg-rose-300/80 border border-rose-300 rounded-xl transition-all cursor-pointer shadow-3xs"
+                  title={`Delete '${activeClass.name}'`}
                 >
-                  <Trash2 className="h-2.5 w-2.5" />
-                  Delete active section
+                  <Trash2 className="h-3.5 w-3.5 text-rose-600" strokeWidth={2.5} />
+                  <span>Delete Class ({activeClass.name})</span>
                 </button>
               ) : (
-                <div className="flex flex-col gap-1.5 p-2.5 rounded-2xl bg-amber-50 border border-amber-200 text-left w-full shadow-3xs">
-                  <p className="text-[10px] text-amber-800 leading-tight font-medium">
-                    Are you sure you want to delete <strong>'{activeClass.name}'</strong>? This cannot be undone.
-                  </p>
-                  <div className="flex items-center gap-1.5 justify-end">
+                <div className="flex flex-col gap-2.5 p-3 rounded-2xl bg-rose-50 border-2 border-rose-300 text-left w-full shadow-sm">
+                  <div className="flex items-start gap-2">
+                    <Trash2 className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+                    <p className="text-xs text-rose-950 leading-snug font-medium">
+                      Are you sure you want to delete <strong className="font-bold underline text-rose-900">'{activeClass.name}'</strong>? All student records, grades, and attendance for this class will be permanently removed.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 justify-end pt-1">
                     <button
+                      type="button"
                       onClick={() => setConfirmDeleteClass(false)}
-                      className="text-[9px] bg-white border border-slate-200 rounded text-slate-500 px-2 py-0.5 hover:bg-slate-100"
+                      className="text-xs bg-white border border-slate-300 rounded-lg text-slate-700 px-3 py-1.5 hover:bg-slate-100 font-semibold transition-colors cursor-pointer"
                     >
                       Cancel
                     </button>
                     <button
+                      type="button"
                       onClick={handleDeleteActiveSection}
-                      className="text-[9px] bg-rose-600 text-white rounded px-2.5 py-0.5 hover:bg-rose-700 font-bold shadow-xs"
+                      className="text-xs bg-rose-600 hover:bg-rose-700 text-white rounded-lg px-3.5 py-1.5 font-bold shadow-sm transition-all cursor-pointer active:scale-95 flex items-center gap-1.5"
                     >
-                      Delete
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Confirm Delete
                     </button>
                   </div>
                 </div>
-              )}
-            </div>
-          )}
+              )
+            ) : (
+              <div className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-slate-400 bg-slate-100 border border-slate-200 rounded-xl select-none" title="At least one class section must remain">
+                <Trash2 className="h-3.5 w-3.5 text-slate-400" />
+                <span>Cannot delete the only class</span>
+              </div>
+            )}
+          </div>
 
           {/* ROSTER INGESTION UPLOAD */}
           <div className="flex flex-col gap-2 bg-slate-100 p-4 rounded-3xl border border-slate-200 shadow-3xs" id="sidebar-roster-uploader">
             <div className="flex items-center gap-1.5">
-              <Upload className="h-3.5 w-3.5 text-indigo-650" />
+              <Upload className="h-3.5 w-3.5 text-indigo-600" />
               <span className="text-[11px] font-black text-slate-700 uppercase tracking-wide">
                 Upload Student Roster
               </span>
@@ -1572,14 +1587,14 @@ export default function App() {
               Accepts .csv or .xlsx with 'First Name', 'Last Name', and 'ID Number'.
             </p>
             
-            <label className="border border-dashed border-slate-350 hover:border-indigo-500 rounded-2xl p-3.5 flex flex-col items-center justify-center text-center cursor-pointer transition-all bg-white hover:bg-slate-50 shadow-3xs active:scale-[0.98]">
+            <label className="border border-dashed border-slate-300 hover:border-indigo-500 rounded-2xl p-3.5 flex flex-col items-center justify-center text-center cursor-pointer transition-all bg-white hover:bg-slate-50 shadow-3xs active:scale-[0.98]">
               <input 
                 type="file" 
                 accept=".csv, .xlsx" 
                 onChange={handleRosterFileUpload} 
                 className="hidden" 
               />
-              <FileSpreadsheet className="h-5 w-5 text-indigo-550 mb-1" />
+              <FileSpreadsheet className="h-5 w-5 text-indigo-600 mb-1" />
               <span className="text-xs font-bold text-slate-700">Choose file or drag here</span>
               <span className="text-[9px] text-slate-400 mt-0.5">Scans & verifies short ID lengths</span>
             </label>
@@ -1602,7 +1617,7 @@ export default function App() {
           {/* GLOBAL STUDENT SEARCH (Moved to hamburger sidebar) */}
           <div className="flex flex-col gap-2 bg-slate-100 p-4 rounded-3xl border border-slate-200 shadow-3xs" id="sidebar-global-student-search">
             <div className="flex items-center justify-between pb-0.5">
-              <span className="text-[11px] font-black text-slate-655 uppercase tracking-wide flex items-center gap-1.5">
+              <span className="text-[11px] font-black text-slate-700 uppercase tracking-wide flex items-center gap-1.5">
                 <Search className="h-3.5 w-3.5 text-indigo-600 font-bold" />
                 Global Search
               </span>
