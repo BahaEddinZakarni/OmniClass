@@ -79,26 +79,48 @@ const INITIAL_CLASSES: ClassSection[] = [
   }
 ];
 
-// Date formatter: converts date format from left to right (D/M/YYYY, e.g. 14/5/2026)
+// Date formatter: converts date format everywhere to dd-mm-yy (e.g. 14-05-26)
 export const formatDisplayDate = (d: string): string => {
   if (!d) return '';
-  // Check YYYY-MM-DD
-  const ymdMatch = d.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  const trimmed = d.trim();
+
+  // 1. Matches YYYY-MM-DD or YYYY/MM/DD
+  const ymdMatch = trimmed.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
   if (ymdMatch) {
-    const year = ymdMatch[1];
-    const month = parseInt(ymdMatch[2], 10);
-    const day = parseInt(ymdMatch[3], 10);
-    return `${day}/${month}/${year}`;
+    const year = ymdMatch[1].slice(-2);
+    const month = String(parseInt(ymdMatch[2], 10)).padStart(2, '0');
+    const day = String(parseInt(ymdMatch[3], 10)).padStart(2, '0');
+    return `${day}-${month}-${year}`;
   }
-  // Check YYYY/MM/DD
-  const ymdSlash = d.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
-  if (ymdSlash) {
-    const year = ymdSlash[1];
-    const month = parseInt(ymdSlash[2], 10);
-    const day = parseInt(ymdSlash[3], 10);
-    return `${day}/${month}/${year}`;
+
+  // 2. Matches DD-MM-YYYY or DD/MM/YYYY
+  const dmyMatch = trimmed.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+  if (dmyMatch) {
+    const day = String(parseInt(dmyMatch[1], 10)).padStart(2, '0');
+    const month = String(parseInt(dmyMatch[2], 10)).padStart(2, '0');
+    const year = dmyMatch[3].slice(-2);
+    return `${day}-${month}-${year}`;
   }
-  return d;
+
+  // 3. Matches DD-MM-YY or DD/MM/YY
+  const dmyShortMatch = trimmed.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2})$/);
+  if (dmyShortMatch) {
+    const day = String(parseInt(dmyShortMatch[1], 10)).padStart(2, '0');
+    const month = String(parseInt(dmyShortMatch[2], 10)).padStart(2, '0');
+    const year = dmyShortMatch[3];
+    return `${day}-${month}-${year}`;
+  }
+
+  // 4. Fallback: Parse with Date object
+  const parsed = new Date(trimmed);
+  if (!isNaN(parsed.getTime())) {
+    const day = String(parsed.getDate()).padStart(2, '0');
+    const month = String(parsed.getMonth() + 1).padStart(2, '0');
+    const year = String(parsed.getFullYear()).slice(-2);
+    return `${day}-${month}-${year}`;
+  }
+
+  return trimmed;
 };
 
 const HIGHLIGHT_COLORS = [
@@ -250,6 +272,107 @@ function StudentGearBox({
         </div>
       )}
     </div>
+  );
+}
+
+interface GradeScoreInputProps {
+  score: number | undefined;
+  maxMark: number;
+  highlightColor?: string;
+  onSave: (val: number | undefined) => void;
+  className?: string;
+}
+
+function GradeScoreInput({
+  score,
+  maxMark,
+  highlightColor,
+  onSave,
+  className = 'w-16'
+}: GradeScoreInputProps) {
+  const isExplicitlySet = score !== undefined && score !== null;
+  const [isFocused, setIsFocused] = useState(false);
+  const [typedValue, setTypedValue] = useState<string>('');
+
+  const handleFocus = (e: React.FocusEvent<HTMLInputElement>) => {
+    setIsFocused(true);
+    if (!isExplicitlySet) {
+      // Default zero disappears when clicked so user can type freely without creating e.g. 50
+      setTypedValue('');
+    } else {
+      // If already set, show current value and select all for quick typing
+      setTypedValue(String(score));
+      e.target.select();
+    }
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value;
+    // Allow empty string so user can clear out mark
+    if (raw === '') {
+      setTypedValue('');
+      onSave(undefined);
+      return;
+    }
+
+    // Only allow positive numbers (and optional decimal point)
+    if (!/^\d*\.?\d*$/.test(raw)) return;
+
+    let num = parseFloat(raw);
+    if (!isNaN(num)) {
+      if (num > maxMark) num = maxMark;
+      if (num < 0) num = 0;
+      setTypedValue(raw);
+      onSave(num);
+    } else {
+      setTypedValue(raw);
+    }
+  };
+
+  const handleBlur = () => {
+    setIsFocused(false);
+    if (typedValue.trim() === '') {
+      onSave(undefined);
+    } else {
+      let num = parseFloat(typedValue);
+      if (isNaN(num)) {
+        onSave(undefined);
+      } else {
+        if (num > maxMark) num = maxMark;
+        if (num < 0) num = 0;
+        onSave(num);
+      }
+    }
+  };
+
+  // When not focused:
+  // - If explicitly set (including a manually entered 0): show String(score) in bold dark font (not grayed out).
+  // - If unset: show '0' in grayed-out italic styling.
+  // When focused:
+  // - Show typedValue (which is empty '' if was unset, so default zero disappeared!).
+  const displayVal = isFocused ? typedValue : (isExplicitlySet ? String(score) : '0');
+  const isGrayedOut = !isFocused && !isExplicitlySet;
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={displayVal}
+      onFocus={handleFocus}
+      onChange={handleChange}
+      onBlur={handleBlur}
+      className={`${className} text-xs text-right rounded border p-1 transition-all outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${
+        highlightColor ? 'bg-white/90' : 'bg-slate-100/90'
+      } ${
+        isFocused
+          ? 'bg-white ring-2 ring-indigo-500 border-indigo-400 font-bold text-slate-900 shadow-sm'
+          : 'hover:bg-slate-200/60 border-transparent hover:border-slate-300'
+      } ${
+        isGrayedOut
+          ? 'text-slate-400 font-normal italic opacity-70 select-all'
+          : 'text-slate-900 font-extrabold'
+      }`}
+    />
   );
 }
 
@@ -526,16 +649,20 @@ export default function App() {
   };
 
   // Cross-section score changes helper for Search Result updates
-  const handleScoreChangeCrossSection = (studentId: string, assessmentName: string, scoreStr: string, className: string) => {
-    let scoreNum = parseFloat(scoreStr);
-    if (isNaN(scoreNum)) {
-      scoreNum = 0;
-    }
-
+  const handleScoreChangeCrossSection = (studentId: string, assessmentName: string, val: number | undefined, className: string) => {
     setClasses(prev => prev.map(cl => {
       if (cl.name === className) {
         const nextStudentScores = cl.grades[studentId] ? { ...cl.grades[studentId] } : {};
-        nextStudentScores[assessmentName] = scoreNum;
+        if (val === undefined || isNaN(val)) {
+          delete nextStudentScores[assessmentName];
+        } else {
+          const currentAss = cl.assessments.find(a => a.name === assessmentName);
+          const maxAllowed = currentAss?.maxMark && currentAss.maxMark > 0 ? currentAss.maxMark : 100;
+          let clamped = val;
+          if (clamped < 0) clamped = 0;
+          if (clamped > maxAllowed) clamped = maxAllowed;
+          nextStudentScores[assessmentName] = clamped;
+        }
 
         return {
           ...cl,
@@ -1014,20 +1141,20 @@ export default function App() {
   };
 
   // Edit Single score in table matrix
-  const handleScoreChange = (studentId: string, assessmentName: string, scoreStr: string) => {
-    let scoreNum = parseFloat(scoreStr);
-    if (isNaN(scoreNum)) {
-      scoreNum = 0;
-    }
-    const currentAss = activeClass.assessments.find(a => a.name === assessmentName);
-    const maxAllowed = currentAss?.maxMark && currentAss.maxMark > 0 ? currentAss.maxMark : 100;
-    if (scoreNum < 0) scoreNum = 0;
-    if (scoreNum > maxAllowed) scoreNum = maxAllowed;
-
+  const handleScoreChange = (studentId: string, assessmentName: string, val: number | undefined) => {
     setClasses(prev => prev.map(cl => {
       if (cl.name === activeClass.name) {
         const nextStudentScores = cl.grades[studentId] ? { ...cl.grades[studentId] } : {};
-        nextStudentScores[assessmentName] = scoreNum;
+        if (val === undefined || isNaN(val)) {
+          delete nextStudentScores[assessmentName];
+        } else {
+          const currentAss = cl.assessments.find(a => a.name === assessmentName);
+          const maxAllowed = currentAss?.maxMark && currentAss.maxMark > 0 ? currentAss.maxMark : 100;
+          let clamped = val;
+          if (clamped < 0) clamped = 0;
+          if (clamped > maxAllowed) clamped = maxAllowed;
+          nextStudentScores[assessmentName] = clamped;
+        }
 
         return {
           ...cl,
@@ -1390,10 +1517,16 @@ export default function App() {
       <header className="bg-[#f3f4f6]/90 backdrop-blur-md border-b border-slate-200/80 px-6 py-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4" id="omni-header">
         <div className="flex items-center gap-3.5">
           <button 
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="p-3 bg-white hover:bg-slate-100 rounded-full text-slate-700 transition-all cursor-pointer flex items-center justify-center border border-slate-200 shadow-3xs active:scale-95"
+            type="button"
+            onClick={() => setIsSidebarOpen(prev => !prev)}
+            className={`p-3 rounded-full transition-all cursor-pointer flex items-center justify-center border shadow-3xs active:scale-95 ${
+              isSidebarOpen 
+                ? 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100' 
+                : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-200'
+            }`}
             id="toggle-sidebar-hamburger"
-            title={isSidebarOpen ? "Minimize Navigation Drawer" : "Expand Navigation Drawer"}
+            title={isSidebarOpen ? "Hide sidebar menu" : "Show sidebar menu"}
+            aria-label={isSidebarOpen ? "Hide sidebar menu" : "Show sidebar menu"}
           >
             <Menu className="h-5 w-5" />
           </button>
@@ -1439,20 +1572,22 @@ export default function App() {
 
         {/* SIDEBAR WIDGET PANELS */}
         <aside className={`
-          fixed inset-y-0 left-0 z-50 w-80 bg-slate-50 p-5 flex flex-col shrink-0 gap-5 border-r border-slate-200 shadow-xl overflow-y-auto transition-transform duration-300
-          lg:self-start lg:sticky lg:top-0 lg:max-h-screen lg:translate-x-0 lg:shadow-none lg:w-80 lg:flex lg:border-r lg:border-slate-200
-          ${isSidebarOpen ? 'translate-x-0 flex' : '-translate-x-full hidden lg:flex'}
+          fixed inset-y-0 left-0 z-50 w-80 bg-slate-50 p-5 flex flex-col shrink-0 gap-5 border-r border-slate-200 shadow-xl overflow-y-auto transition-all duration-300
+          lg:self-start lg:sticky lg:top-0 lg:max-h-screen lg:shadow-none lg:border-r lg:border-slate-200
+          ${isSidebarOpen ? 'translate-x-0 flex lg:flex lg:w-80' : '-translate-x-full hidden lg:hidden'}
         `} id="omni-sidebar">
           
-          {/* Mobile close button drawer header */}
-          <div className="flex items-center justify-between lg:hidden border-b border-slate-200 pb-3" id="sidebar-drawer-mobile-header">
+          {/* Close button drawer header */}
+          <div className="flex items-center justify-between border-b border-slate-200 pb-3" id="sidebar-drawer-header">
             <span className="text-sm font-bold text-slate-800 tracking-tight flex items-center gap-1.5">
               <GraduationCap className="h-5 w-5 text-indigo-600" />
               Navigation Panel
             </span>
             <button
+              type="button"
               onClick={() => setIsSidebarOpen(false)}
-              className="p-1.5 hover:bg-slate-200 rounded-full text-slate-500 border border-slate-200 transition-colors cursor-pointer"
+              className="p-1.5 hover:bg-slate-200 rounded-full text-slate-500 hover:text-slate-800 border border-slate-200 transition-colors cursor-pointer"
+              title="Close sidebar"
             >
               <X className="h-4 w-4" />
             </button>
@@ -1755,18 +1890,19 @@ export default function App() {
                               ) : (
                                 <div className="grid grid-cols-1 gap-1.5">
                                   {assessments.map(ass => {
-                                    const score = classSection.grades[student.id]?.[ass.name] ?? 0;
+                                    const score = classSection.grades[student.id]?.[ass.name];
+                                    const maxMark = ass.maxMark || 100;
                                     return (
                                       <div key={ass.name} className="flex items-center justify-between bg-slate-50 px-2 py-1 rounded-lg border border-slate-150">
                                         <span className="text-[10px] text-slate-550 truncate font-semibold w-1/2">{ass.name}</span>
-                                        <div className="flex items-center gap-1 w-20">
-                                          <input
-                                            type="number"
-                                            min={0}
-                                            value={score}
-                                            onChange={e => handleScoreChangeCrossSection(student.id, ass.name, e.target.value, classSection.name)}
-                                            className="w-full text-right text-[11px] font-black bg-white border border-slate-300 rounded px-1.5 py-0.5 outline-none focus:border-indigo-500"
+                                        <div className="flex items-center gap-1 w-24 justify-end">
+                                          <GradeScoreInput
+                                            score={score}
+                                            maxMark={maxMark}
+                                            className="w-14"
+                                            onSave={val => handleScoreChangeCrossSection(student.id, ass.name, val, classSection.name)}
                                           />
+                                          <span className="text-[9px] text-slate-400 font-mono">/{maxMark}</span>
                                         </div>
                                       </div>
                                     );
@@ -2214,8 +2350,8 @@ export default function App() {
                                         return (
                                           <div key={ass.name} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-white border border-slate-200 shadow-3xs">
                                             <span className="text-slate-500 font-medium text-[11px] truncate max-w-28">{ass.name}:</span>
-                                            <span className={`font-mono text-[11px] font-bold ${hasScore ? 'text-slate-900 font-extrabold' : 'text-slate-300 italic font-normal'}`}>
-                                              {hasScore ? score : '-'}
+                                            <span className={`font-mono text-[11px] ${hasScore ? 'text-slate-900 font-extrabold' : 'text-slate-400 font-normal italic'}`}>
+                                              {hasScore ? score : '0'}
                                             </span>
                                           </div>
                                         );
@@ -2260,12 +2396,15 @@ export default function App() {
                     {/* Choose and configure date columns */}
                     <div className="p-4 bg-slate-50 rounded-xl border border-slate-100 grid md:grid-cols-3 gap-4 items-center">
                       <div className="flex flex-col gap-1">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Attendance date</label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center justify-between">
+                          <span>Attendance date</span>
+                          <span className="font-mono text-indigo-600 font-bold lowercase">dd-mm-yy: {formatDisplayDate(attendanceDate)}</span>
+                        </label>
                         <input
                           type="date"
                           value={attendanceDate}
                           onChange={e => setAttendanceDate(e.target.value)}
-                          className="text-xs bg-white border border-slate-300 rounded-lg p-2 focus:ring-1 outline-none"
+                          className="text-xs bg-white border border-slate-300 rounded-lg p-2 focus:ring-1 outline-none font-mono"
                         />
                       </div>
                       <div className="md:col-span-2 pt-4 md:pt-0">
@@ -2496,18 +2635,16 @@ export default function App() {
                                   <td className={`pl-4 pr-1.5 py-3.5 text-slate-500 font-mono font-medium ${rowBgClass} ${colorInfo.border || ''}`}>{s.id}</td>
                                   <td className={`pl-1.5 pr-4 py-3.5 font-bold text-slate-800 whitespace-nowrap ${rowBgClass}`}>{s.fullName}</td>
                                   {activeClass.assessments.map(a => {
-                                    let score = activeClass.grades[s.id]?.[a.name] ?? 0;
+                                    const score = activeClass.grades[s.id]?.[a.name];
                                     const maxMark = a.maxMark || 100;
                                     return (
                                       <td key={a.name} className={`px-4 py-3.5 whitespace-nowrap ${rowBgClass}`}>
                                         <div className="flex items-center gap-1">
-                                          <input 
-                                            type="number"
-                                            min={0}
-                                            max={maxMark}
-                                            value={score}
-                                            onChange={e => handleScoreChange(s.id, a.name, e.target.value)}
-                                            className={`w-16 text-xs text-right ${s.color ? 'bg-white/80' : 'bg-slate-100'} hover:bg-slate-200/60 focus:bg-white rounded border border-transparent hover:border-slate-300 p-1 font-bold text-slate-800 animate-none`}
+                                          <GradeScoreInput 
+                                            score={score}
+                                            maxMark={maxMark}
+                                            highlightColor={s.color}
+                                            onSave={val => handleScoreChange(s.id, a.name, val)}
                                           />
                                           <span className="text-[10px] text-slate-400 font-mono">/{maxMark}</span>
                                         </div>
@@ -2965,7 +3102,7 @@ export default function App() {
 
                 {/* Weight Total Status Banner */}
                 {(() => {
-                  const currentSum = Object.values(tempWeights).reduce((sum, w) => sum + (Number(w) || 0), 0);
+                  const currentSum: number = (Object.values(tempWeights) as number[]).reduce((sum: number, w: number) => sum + (Number(w) || 0), 0);
                   const isOver = currentSum > 100;
                   const isBalanced = currentSum === 100;
 
@@ -3018,7 +3155,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={handleSaveFinalGradeWeights}
-                    disabled={Object.values(tempWeights).reduce((sum, w) => sum + (Number(w) || 0), 0) > 100}
+                    disabled={((Object.values(tempWeights) as number[]).reduce((sum: number, w: number) => sum + (Number(w) || 0), 0)) > 100}
                     className="px-5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl shadow-sm transition-all cursor-pointer inline-flex items-center gap-1.5 active:scale-95"
                   >
                     <Check className="h-4 w-4" />
