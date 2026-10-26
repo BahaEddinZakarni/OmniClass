@@ -13,6 +13,8 @@ import {
   UserPlus,
   FileSpreadsheet,
   ChevronRight,
+  ChevronLeft,
+  ChevronDown,
   Info,
   X,
   Menu,
@@ -373,6 +375,271 @@ function GradeScoreInput({
           : 'text-slate-900 font-extrabold'
       }`}
     />
+  );
+}
+
+interface DDMMYYDatePickerProps {
+  value: string;
+  onChange: (val: string) => void;
+  className?: string;
+  id?: string;
+}
+
+// Helpers for DDMMYYDatePicker
+const parseDatePickerParts = (d: string) => {
+  if (!d) {
+    const now = new Date();
+    return { year: now.getFullYear(), month: now.getMonth() + 1, day: now.getDate() };
+  }
+  const trimmed = d.trim();
+  const ymd = trimmed.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+  if (ymd) {
+    return { year: parseInt(ymd[1], 10), month: parseInt(ymd[2], 10), day: parseInt(ymd[3], 10) };
+  }
+  const dmy = trimmed.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+  if (dmy) {
+    return { day: parseInt(dmy[1], 10), month: parseInt(dmy[2], 10), year: parseInt(dmy[3], 10) };
+  }
+  const dmyShort = trimmed.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2})$/);
+  if (dmyShort) {
+    return { day: parseInt(dmyShort[1], 10), month: parseInt(dmyShort[2], 10), year: 2000 + parseInt(dmyShort[3], 10) };
+  }
+  const now = new Date();
+  return { year: now.getFullYear(), month: now.getMonth() + 1, day: now.getDate() };
+};
+
+const formatDateToDDMMYY = (year: number, month: number, day: number): string => {
+  const yr = String(year).slice(-2);
+  const m = String(month).padStart(2, '0');
+  const d = String(day).padStart(2, '0');
+  return `${d}-${m}-${yr}`;
+};
+
+const formatDateToYMD = (year: number, month: number, day: number): string => {
+  const m = String(month).padStart(2, '0');
+  const d = String(day).padStart(2, '0');
+  return `${year}-${m}-${d}`;
+};
+
+function DDMMYYDatePicker({ value, onChange, className = '', id }: DDMMYYDatePickerProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  
+  const selectedParts = parseDatePickerParts(value);
+  const [viewYear, setViewYear] = useState<number>(selectedParts.year);
+  const [viewMonth, setViewMonth] = useState<number>(selectedParts.month); // 1-12
+  
+  const [typedText, setTypedText] = useState<string>(
+    formatDateToDDMMYY(selectedParts.year, selectedParts.month, selectedParts.day)
+  );
+  const [isInputFocused, setIsInputFocused] = useState(false);
+
+  useEffect(() => {
+    if (!isInputFocused) {
+      const p = parseDatePickerParts(value);
+      setTypedText(formatDateToDDMMYY(p.year, p.month, p.day));
+      setViewYear(p.year);
+      setViewMonth(p.month);
+    }
+  }, [value, isInputFocused]);
+
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    if (isOpen) {
+      document.addEventListener('mousedown', handleOutsideClick);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+    };
+  }, [isOpen]);
+
+  const handleSelectDay = (day: number) => {
+    const newYmd = formatDateToYMD(viewYear, viewMonth, day);
+    onChange(newYmd);
+    setTypedText(formatDateToDDMMYY(viewYear, viewMonth, day));
+    setIsOpen(false);
+  };
+
+  const handlePrevMonth = () => {
+    if (viewMonth === 1) {
+      setViewMonth(12);
+      setViewYear(prev => prev - 1);
+    } else {
+      setViewMonth(prev => prev - 1);
+    }
+  };
+
+  const handleNextMonth = () => {
+    if (viewMonth === 12) {
+      setViewMonth(1);
+      setViewYear(prev => prev + 1);
+    } else {
+      setViewMonth(prev => prev + 1);
+    }
+  };
+
+  const handleSelectToday = () => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth() + 1;
+    const d = now.getDate();
+    setViewYear(y);
+    setViewMonth(m);
+    onChange(formatDateToYMD(y, m, d));
+    setTypedText(formatDateToDDMMYY(y, m, d));
+    setIsOpen(false);
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setTypedText(e.target.value);
+  };
+
+  const handleInputBlur = () => {
+    setIsInputFocused(false);
+    const p = parseDatePickerParts(typedText);
+    const ymd = formatDateToYMD(p.year, p.month, p.day);
+    onChange(ymd);
+    setTypedText(formatDateToDDMMYY(p.year, p.month, p.day));
+    setViewYear(p.year);
+    setViewMonth(p.month);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      (e.target as HTMLInputElement).blur();
+    }
+  };
+
+  const daysInMonth = new Date(viewYear, viewMonth, 0).getDate();
+  const firstDayIndex = new Date(viewYear, viewMonth - 1, 1).getDay();
+  // Monday as starting day
+  const startingOffset = (firstDayIndex + 6) % 7;
+
+  const MONTH_NAMES = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+
+  const now = new Date();
+  const isToday = (day: number) => 
+    now.getFullYear() === viewYear && (now.getMonth() + 1) === viewMonth && now.getDate() === day;
+
+  const isSelected = (day: number) =>
+    selectedParts.year === viewYear && selectedParts.month === viewMonth && selectedParts.day === day;
+
+  return (
+    <div ref={containerRef} className="relative inline-block w-full">
+      <div className="flex items-center relative">
+        <input
+          id={id}
+          type="text"
+          value={typedText}
+          placeholder="dd-mm-yy"
+          onFocus={() => {
+            setIsInputFocused(true);
+            setIsOpen(true);
+          }}
+          onChange={handleInputChange}
+          onBlur={handleInputBlur}
+          onKeyDown={handleKeyDown}
+          className={`${className} w-full text-xs bg-white border border-slate-300 rounded-lg pl-8 pr-8 py-2 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none font-mono font-bold text-slate-800 transition-all cursor-pointer`}
+        />
+        <Calendar 
+          className="h-4 w-4 text-slate-400 absolute left-2.5 pointer-events-none" 
+        />
+        <button
+          type="button"
+          onClick={() => setIsOpen(prev => !prev)}
+          className="absolute right-2 p-1 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+          title="Toggle calendar"
+        >
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform duration-150 ${isOpen ? 'rotate-180 text-indigo-600' : ''}`} />
+        </button>
+      </div>
+
+      {isOpen && (
+        <div className="absolute left-0 top-full mt-1.5 z-50 bg-white border border-slate-200 rounded-xl shadow-2xl p-3 w-72 animate-in fade-in zoom-in-95 duration-100">
+          <div className="flex items-center justify-between mb-2 pb-2 border-b border-slate-100">
+            <button
+              type="button"
+              onClick={handlePrevMonth}
+              className="p-1 rounded-lg hover:bg-slate-100 text-slate-600 transition-colors cursor-pointer"
+              title="Previous Month"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <div className="text-xs font-extrabold text-slate-800 flex items-center gap-1">
+              <span>{MONTH_NAMES[viewMonth - 1]}</span>
+              <span className="text-slate-500 font-mono">{viewYear}</span>
+            </div>
+            <button
+              type="button"
+              onClick={handleNextMonth}
+              className="p-1 rounded-lg hover:bg-slate-100 text-slate-600 transition-colors cursor-pointer"
+              title="Next Month"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-7 gap-1 text-center mb-1">
+            {['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'].map(dayName => (
+              <span key={dayName} className="text-[10px] font-bold text-slate-400 uppercase py-0.5">
+                {dayName}
+              </span>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-7 gap-1 text-center">
+            {Array.from({ length: startingOffset }).map((_, i) => (
+              <div key={`offset-${i}`} className="h-7 w-7" />
+            ))}
+            {Array.from({ length: daysInMonth }).map((_, i) => {
+              const day = i + 1;
+              const selected = isSelected(day);
+              const today = isToday(day);
+              return (
+                <button
+                  key={day}
+                  type="button"
+                  onClick={() => handleSelectDay(day)}
+                  className={`h-7 w-7 text-xs font-mono font-medium rounded-lg flex items-center justify-center transition-all cursor-pointer ${
+                    selected
+                      ? 'bg-indigo-600 text-white font-extrabold shadow-sm'
+                      : today
+                      ? 'bg-indigo-50 text-indigo-700 font-bold hover:bg-indigo-100'
+                      : 'text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  {day}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center justify-between mt-3 pt-2 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={handleSelectToday}
+              className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 hover:underline cursor-pointer"
+            >
+              Today
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsOpen(false)}
+              className="text-[11px] font-medium text-slate-500 hover:text-slate-800 cursor-pointer"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2396,15 +2663,13 @@ export default function App() {
                     {/* Choose and configure date columns */}
                     <div className="p-4 bg-slate-50 rounded-xl border border-slate-100 grid md:grid-cols-3 gap-4 items-center">
                       <div className="flex flex-col gap-1">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center justify-between">
-                          <span>Attendance date</span>
-                          <span className="font-mono text-indigo-600 font-bold lowercase">dd-mm-yy: {formatDisplayDate(attendanceDate)}</span>
+                        <label htmlFor="attendance-date-picker" className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                          Attendance date
                         </label>
-                        <input
-                          type="date"
+                        <DDMMYYDatePicker
+                          id="attendance-date-picker"
                           value={attendanceDate}
-                          onChange={e => setAttendanceDate(e.target.value)}
-                          className="text-xs bg-white border border-slate-300 rounded-lg p-2 focus:ring-1 outline-none font-mono"
+                          onChange={setAttendanceDate}
                         />
                       </div>
                       <div className="md:col-span-2 pt-4 md:pt-0">
