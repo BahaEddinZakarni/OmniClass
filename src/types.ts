@@ -12,6 +12,16 @@ export interface Assessment {
   maxMark?: number; // Full mark of assessment (e.g. 20, 50, 100)
 }
 
+export type DayOfWeek = 'Monday' | 'Tuesday' | 'Wednesday' | 'Thursday' | 'Friday' | 'Saturday' | 'Sunday';
+
+export interface ClassScheduleSlot {
+  id?: string;
+  day: DayOfWeek;
+  startTime: string; // e.g. "09:00 AM"
+  endTime: string;   // e.g. "10:30 AM"
+  room?: string;
+}
+
 export interface ClassSection {
   name: string;
   students: Student[]; // Sorted alphabetically by firstName
@@ -29,4 +39,5 @@ export interface ClassSection {
       [assessmentName: string]: number;
     };
   };
+  schedule?: ClassScheduleSlot[];
 }

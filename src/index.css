@@ -1,9 +1,33 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Manrope:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Plus Jakarta Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", "Manrope", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Periwinkle Design Tokens */
+  --color-peri-primary: #4D5A8F;
+  --color-peri-secondary: #6D7CB0;
+  --color-peri-accent: #8F9DCC;
+  --color-peri-light: #B3C0E6;
+  --color-peri-selected: #CED8F2;
+  --color-peri-soft: #E3EAFA;
+  --color-peri-bg: #F5F8FF;
+  --color-peri-text: #252B3B;
+  --color-peri-muted: #747D91;
+  --color-peri-border: #E8ECF5;
+  --color-peri-card: #FFFFFF;
+
+  /* Semantic UI mappings */
+  --color-app-bg: #F5F8FF;
+  --color-sidebar-bg: #FFFFFF;
+  --color-sidebar-border: #E8ECF5;
+  --color-nav-active: #4D5A8F;
+  --color-nav-text: #252B3B;
+  --color-nav-muted: #747D91;
+  --color-table-header-bg: #E3EAFA;
+  --color-table-header-text: #252B3B;
+  --color-row-selected: #CED8F2;
 }
 
 /* Hide number input spin arrows across all browsers */
@@ -15,4 +39,29 @@ input[type="number"]::-webkit-inner-spin-button {
 input[type="number"] {
   -moz-appearance: textfield;
   appearance: textfield;
+}
+
+/* Semantic Alert Banners */
+.alert-success {
+  background-color: #dcfce7;
+  color: #14532d;
+  border: 1px solid #86efac;
+}
+
+.alert-warning {
+  background-color: #fef9c3;
+  color: #78350f;
+  border: 1px solid #fde047;
+}
+
+.alert-error {
+  background-color: #fee2e2;
+  color: #7f1d1d;
+  border: 1px solid #fca5a5;
+}
+
+.alert-info {
+  background-color: #dbeafe;
+  color: #1e3a8a;
+  border: 1px solid #93c5fd;
 }
