@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { initializeFirestore } from "firebase/firestore";
 
 // Your web app's Firebase configuration from your setup request
 const firebaseConfig = {
@@ -13,9 +13,11 @@ const firebaseConfig = {
   measurementId: "G-29F4QM86PL"
 };
 
-// Initialize Firebase
+// Initialize Firebase with ignoreUndefinedProperties to prevent unhandled exceptions
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+export const db = initializeFirestore(app, {
+  ignoreUndefinedProperties: true
+});
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 // Force Google to prompt account selection so users can choose the current browser account or sign in with another account

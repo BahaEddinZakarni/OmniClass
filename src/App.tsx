@@ -482,7 +482,7 @@ function GradeScoreInput({
       onChange={handleChange}
       onBlur={handleBlur}
       className={`${className} text-xs text-right rounded border p-1 transition-all outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${
-        highlightColor ? 'bg-white/90' : 'bg-slate-100/90'
+        highlightColor && highlightColor !== 'none' ? 'bg-white/90' : 'bg-slate-100/90'
       } ${
         isFocused
           ? 'bg-white ring-2 ring-indigo-500 border-indigo-400 font-bold text-slate-900 shadow-sm'
@@ -816,7 +816,13 @@ export default function App() {
           ...cl,
           students: cl.students.map(st => {
             if (st.id === studentId) {
-              return { ...st, color: colorId === 'none' ? undefined : colorId };
+              const updated = { ...st };
+              if (!colorId || colorId === 'none') {
+                delete updated.color;
+              } else {
+                updated.color = colorId;
+              }
+              return updated;
             }
             return st;
           })
@@ -973,14 +979,19 @@ export default function App() {
         }
       } else {
         // First-time user: persist current client-side state into Firestore automatically
-        setDoc(docRef, { classes }, { merge: true })
-          .then(() => {
-            lastFirestoreDataRef.current = JSON.stringify(classes);
-          })
-          .catch((err) => {
-            console.error("Failed to sync initial roster to Firestore:", err);
-            setSyncErrorMessage("Failed to sync initial roster to Firestore.");
-          });
+        try {
+          const sanitizedClasses = JSON.parse(JSON.stringify(classes));
+          setDoc(docRef, { classes: sanitizedClasses }, { merge: true })
+            .then(() => {
+              lastFirestoreDataRef.current = JSON.stringify(classes);
+            })
+            .catch((err) => {
+              console.error("Failed to sync initial roster to Firestore:", err);
+              setSyncErrorMessage("Failed to sync initial roster to Firestore.");
+            });
+        } catch (prepErr) {
+          console.error("Failed to prepare initial roster for Firestore:", prepErr);
+        }
       }
       isInitialDocFetched.current = true;
     }, (error) => {
@@ -1005,21 +1016,27 @@ export default function App() {
     if (currentClassesStr !== lastFirestoreDataRef.current) {
       setIsSyncing(true);
       const docRef = doc(db, 'users', user.uid);
-      setDoc(docRef, { classes }, { merge: true })
-        .then(() => {
-          lastFirestoreDataRef.current = currentClassesStr;
-          setIsSyncing(false);
-          setSyncErrorMessage(null);
-        })
-        .catch((err) => {
-          setIsSyncing(false);
-          console.error("Firestore sync write failed: ", err);
-          try {
-            handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`);
-          } catch (handledErr) {
-            setSyncErrorMessage("Database save rejected. Check Firebase rules.");
-          }
-        });
+      try {
+        const sanitizedClasses = JSON.parse(currentClassesStr);
+        setDoc(docRef, { classes: sanitizedClasses }, { merge: true })
+          .then(() => {
+            lastFirestoreDataRef.current = currentClassesStr;
+            setIsSyncing(false);
+            setSyncErrorMessage(null);
+          })
+          .catch((err) => {
+            setIsSyncing(false);
+            console.error("Firestore sync write failed: ", err);
+            try {
+              handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`);
+            } catch (handledErr) {
+              setSyncErrorMessage("Database save rejected. Check Firebase rules.");
+            }
+          });
+      } catch (prepErr) {
+        setIsSyncing(false);
+        console.error("Failed to prepare classes for Firestore write: ", prepErr);
+      }
     }
   }, [classes, user]);
 
@@ -2030,8 +2047,7 @@ export default function App() {
       id,
       firstName,
       lastName,
-      fullName: name,
-      color: 'none'
+      fullName: name
     };
 
     const updatedStudents = [...targetClass.students, newStudent].sort((a, b) => 
@@ -3887,7 +3903,7 @@ export default function App() {
                             {activeClass.students.map(s => {
                               const colorInfo = getStudentHighlightClasses(s.color);
                               const rowBgClass = colorInfo.bg || '';
-                              const finalGradeCellClass = s.color ? rowBgClass : 'bg-[#E3EAFA]/30';
+                              const finalGradeCellClass = s.color && s.color !== 'none' ? rowBgClass : 'bg-[#E3EAFA]/30';
                               return (
                                 <tr key={s.id} className={`${rowBgClass} ${colorInfo.hover || 'hover:bg-[#F5F8FF]'} transition-all`}>
                                   <td className={`pl-4 pr-1.5 py-3.5 text-[#747D91] font-mono font-medium ${rowBgClass} ${colorInfo.border || ''}`}>{s.id}</td>
