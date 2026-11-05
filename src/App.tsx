@@ -1683,6 +1683,14 @@ export default function App() {
       return cl;
     }));
 
+    // Auto-scroll the attendance table horizontally to 0 so the new column right next to the names is immediately in view
+    setTimeout(() => {
+      const el = document.getElementById('attendance-table-container');
+      if (el) {
+        el.scrollTo({ left: 0, behavior: 'smooth' });
+      }
+    }, 50);
+
     setTakeAttendanceMsgMessage({
       type: 'success',
       text: `Added attendance date column '${formatDisplayDate(dateStr)}' next to student names.`
@@ -5075,14 +5083,14 @@ export default function App() {
                         No attendance date logs found. Pick an attendance date above and click 'Take Attendance' to initiate your registry.
                       </div>
                     ) : (
-                      <div className="overflow-x-auto border border-[#E8ECF5] rounded-xl shadow-3xs">
+                      <div id="attendance-table-container" className="overflow-x-auto border border-[#E8ECF5] rounded-xl shadow-3xs">
                         <table className="w-full text-left border-separate border-spacing-0" id="attendance-table-matrix">
                           <thead>
                             <tr className="bg-[#E3EAFA] text-[#252B3B] text-[10px] uppercase font-bold tracking-widest">
                               <th className="sticky left-0 z-20 bg-[#E3EAFA] pl-4 pr-3 py-3.5 whitespace-nowrap w-[130px] min-w-[130px] max-w-[130px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]">ID Number</th>
                               <th className="sticky left-[130px] z-20 bg-[#E3EAFA] pl-4 pr-4 py-3.5 whitespace-nowrap w-[175px] min-w-[175px] sm:w-[210px] sm:min-w-[210px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]">Full Name</th>
                               {getAttendanceDates(activeClass).map(d => (
-                                <th key={d} className="px-3 sm:px-4 py-3.5 whitespace-nowrap text-center border-b border-[#E8ECF5]">
+                                <th key={d} className="px-3 sm:px-4 py-3.5 whitespace-nowrap text-center border-b border-[#E8ECF5] w-[130px] min-w-[130px] max-w-[130px]">
                                   <div className="inline-flex items-center gap-1.5 justify-center">
                                     <span className="font-mono text-xs font-bold text-[#252B3B]">
                                       {formatDisplayDate(d)}
@@ -5098,6 +5106,8 @@ export default function App() {
                                   </div>
                                 </th>
                               ))}
+                              {/* Trailing empty column absorbs extra width on wide laptop screens, keeping date columns directly adjacent to student names */}
+                              <th className="border-b border-[#E8ECF5]" />
                             </tr>
                           </thead>
                           <tbody className="text-xs">
@@ -5128,16 +5138,18 @@ export default function App() {
                                     else if (status === 'Absent') pillClass = 'bg-rose-50 text-rose-700 border-rose-200';
 
                                     return (
-                                      <td key={d} className={`px-3 sm:px-4 py-3 text-center whitespace-nowrap border-b border-[#E8ECF5] ${rowBgClass}`}>
+                                      <td key={d} className={`px-3 sm:px-4 py-3 text-center whitespace-nowrap border-b border-[#E8ECF5] w-[130px] min-w-[130px] max-w-[130px] ${rowBgClass}`}>
                                         <button
                                           onClick={() => handleToggleAttendanceCell(s.id, d, status)}
-                                          className={`inline-flex items-center justify-center min-w-[76px] min-h-[32px] px-3 py-1 rounded-full text-[11px] font-bold border transition-all cursor-pointer active:scale-95 ${pillClass}`}
+                                          className={`inline-flex items-center justify-center min-w-[84px] min-h-[32px] px-3 py-1 rounded-full text-[11px] font-bold border transition-all cursor-pointer active:scale-95 ${pillClass}`}
                                         >
                                           {status}
                                         </button>
                                       </td>
                                     );
                                   })}
+                                  {/* Trailing spacer cell absorbs remaining width on wide screens */}
+                                  <td className={`border-b border-[#E8ECF5] ${rowBgClass}`} />
                                 </tr>
                               );
                             })}
