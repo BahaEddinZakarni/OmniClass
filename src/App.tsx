@@ -28,10 +28,22 @@ import {
   Settings,
   Pencil,
   Clock,
-  CalendarDays
+  CalendarDays,
+  CalendarPlus,
+  Filter,
+  Tag,
+  FileText,
+  List,
+  LayoutGrid
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { Student, Assessment, ClassSection, DayOfWeek, ClassScheduleSlot } from './types';
+import { Student, Assessment, ClassSection, DayOfWeek, ClassScheduleSlot, CalendarEvent, CalendarEventType } from './types';
+import { 
+  parseAnyExcelFile, 
+  applyAutoColumnWidths, 
+  applyAutoColumnWidthsToTable,
+  ParsedClassSectionData 
+} from './excelUtils';
 
 // Import Firebase config & handlers
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from './firebase';
@@ -135,6 +147,50 @@ export const TIME_SLOTS = [
   { label: '03:00 PM', startMin: 15 * 60, endMin: 16 * 60, display: '03:00 - 04:00 PM' },
   { label: '04:00 PM', startMin: 16 * 60, endMin: 17 * 60, display: '04:00 - 05:00 PM' },
   { label: '05:00 PM', startMin: 17 * 60, endMin: 18 * 60, display: '05:00 - 06:00 PM' },
+];
+
+export const DAY_OF_WEEK_NAMES: DayOfWeek[] = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+export const INITIAL_CALENDAR_EVENTS: CalendarEvent[] = [
+  {
+    id: 'evt-1',
+    date: '2026-11-11',
+    title: 'Midterm Exam - Class Section A',
+    time: '10:00 AM',
+    className: 'Class Section A',
+    type: 'exam',
+    description: 'Midterm examination on Chapters 1 to 5. Bring scientific calculators and formula sheets.',
+    color: '#E11D48'
+  },
+  {
+    id: 'evt-2',
+    date: '2026-11-04',
+    title: 'Attendance Check & Quiz Review',
+    time: '01:30 PM',
+    className: 'Class Section A',
+    type: 'note',
+    description: 'Review registry records and prep questions for Friday assessment.',
+    color: '#4D5A8F'
+  },
+  {
+    id: 'evt-3',
+    date: '2026-11-16',
+    title: 'Department Faculty Meeting',
+    time: '02:00 PM',
+    type: 'meeting',
+    description: 'Academic council term evaluation in Conference Room B.',
+    color: '#2563EB'
+  },
+  {
+    id: 'evt-4',
+    date: '2026-11-20',
+    title: 'Term Project Submissions Due',
+    time: '11:59 PM',
+    className: 'Class Section A',
+    type: 'deadline',
+    description: 'Final submission deadline for group reports and project presentations.',
+    color: '#D97706'
+  }
 ];
 
 export const CLASS_COLOR_PALETTES = [
@@ -539,6 +595,44 @@ const formatDateToYMD = (year: number, month: number, day: number): string => {
   return `${year}-${m}-${d}`;
 };
 
+const getTodayYMD = (): string => {
+  const now = new Date();
+  return formatDateToYMD(now.getFullYear(), now.getMonth() + 1, now.getDate());
+};
+
+export const formatFullDateString = (ymdStr: string): string => {
+  if (!ymdStr) return '';
+  const parts = ymdStr.split('-');
+  if (parts.length !== 3) return ymdStr;
+  const year = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10) - 1;
+  const day = parseInt(parts[2], 10);
+  const d = new Date(year, month, day);
+  return d.toLocaleDateString('en-US', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric'
+  });
+};
+
+export const getRelativeDateLabel = (ymdStr: string): string | null => {
+  const today = getTodayYMD();
+  if (ymdStr === today) return 'Today';
+  
+  const todayParts = today.split('-').map(Number);
+  const targetParts = ymdStr.split('-').map(Number);
+  const dToday = new Date(todayParts[0], todayParts[1] - 1, todayParts[2]);
+  const dTarget = new Date(targetParts[0], targetParts[1] - 1, targetParts[2]);
+  const diffDays = Math.round((dTarget.getTime() - dToday.getTime()) / (1000 * 60 * 60 * 24));
+  
+  if (diffDays === 1) return 'Tomorrow';
+  if (diffDays === -1) return 'Yesterday';
+  if (diffDays > 1 && diffDays <= 7) return `In ${diffDays} days`;
+  if (diffDays < -1 && diffDays >= -7) return `${Math.abs(diffDays)} days ago`;
+  return null;
+};
+
 function DDMMYYDatePicker({ value, onChange, className = '', id }: DDMMYYDatePickerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -833,14 +927,57 @@ export default function App() {
   };
   
   const [activeClassName, setActiveClassName] = useState<string>('Class Section A');
-  const [activeTab, setActiveTab] = useState<'students' | 'attendance' | 'grades' | 'timetable'>('students');
+  const [activeTab, setActiveTab] = useState<'students' | 'attendance' | 'grades' | 'timetable' | 'calendar'>('students');
 
-  // Sidebar Controls
+  // Calendar & Agenda State
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>(() => {
+    try {
+      const saved = localStorage.getItem('omni_calendar_events');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn("Failed to read calendar events from localStorage", e);
+    }
+    return INITIAL_CALENDAR_EVENTS;
+  });
+
+  const [calendarViewDate, setCalendarViewDate] = useState<Date>(() => new Date());
+  const [calendarSelectedDate, setCalendarSelectedDate] = useState<string>(getTodayYMD);
+  const [calendarViewMode, setCalendarViewMode] = useState<'month' | 'agenda'>('month');
+  const [calendarClassFilter, setCalendarClassFilter] = useState<string>('all');
+  const [calendarTypeFilter, setCalendarTypeFilter] = useState<string>('all');
+
+  // Event Creator / Editor Modal State
+  const [isEventModalOpen, setIsEventModalOpen] = useState(false);
+  const [editingEventId, setEditingEventId] = useState<string | null>(null);
+  const [eventTitleInput, setEventTitleInput] = useState('');
+  const [eventDateInput, setEventDateInput] = useState('');
+  const [eventTimeInput, setEventTimeInput] = useState('10:00 AM');
+  const [isEventAllDay, setIsEventAllDay] = useState(false);
+  const [eventTypeInput, setEventTypeInput] = useState<CalendarEventType>('exam');
+  const [eventClassInput, setEventClassInput] = useState<string>('all');
+  const [eventDescriptionInput, setEventDescriptionInput] = useState('');
+  const [eventModalError, setEventModalError] = useState<string | null>(null);
+  const [confirmDeleteEventTarget, setConfirmDeleteEventTarget] = useState<CalendarEvent | null>(null);
+
+  // Sidebar Controls (Responsive: closed by default on mobile phones/tablets)
   const [newClassNameInput, setNewClassNameInput] = useState('');
   const [isCreatingClass, setIsCreatingClass] = useState(false);
   const [confirmDeleteClass, setConfirmDeleteClass] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(() => {
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      return false;
+    }
+    return true;
+  });
   const [expandedSearchStudentId, setExpandedSearchStudentId] = useState<string | null>(null);
+
+  // Responsive Tab Navigation Helper: Auto-closes mobile drawer when selecting destination
+  const handleSelectTab = (tab: 'students' | 'attendance' | 'grades' | 'timetable' | 'calendar') => {
+    setActiveTab(tab);
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      setIsSidebarOpen(false);
+    }
+  };
 
   // Edit Class Name & Schedule Modal State
   const [editingClassTarget, setEditingClassTarget] = useState<{
@@ -896,7 +1033,7 @@ export default function App() {
   const [confirmDeleteStudentTarget, setConfirmDeleteStudentTarget] = useState<{ studentId: string; studentName: string; className: string } | null>(null);
 
   // Attendance state
-  const [attendanceDate, setAttendanceDate] = useState<string>('2026-05-25');
+  const [attendanceDate, setAttendanceDate] = useState<string>(getTodayYMD);
   const [takeAttendanceMsg, setTakeAttendanceMsgMessage] = useState<{type: 'success'|'warning', text: string} | null>(null);
 
   // Grade Assessment Modal (Add & Edit) states
@@ -926,11 +1063,17 @@ export default function App() {
   const [fileError, setFileError] = useState<string | null>(null);
   const [fileSuccess, setFileSuccess] = useState<string | null>(null);
 
-  // Staging state for list imports containing short ID values
+  // Staging state for list imports containing short ID values, attendance, grades, or multi-sections
   const [pendingImport, setPendingImport] = useState<{
     className: string;
     normal: Student[];
     short: Student[];
+    attendanceDates?: string[];
+    attendance?: Record<string, Record<string, 'Not Taken' | 'Attended' | 'Absent'>>;
+    assessments?: Assessment[];
+    grades?: Record<string, Record<string, number>>;
+    isMultiSection?: boolean;
+    allSections?: ParsedClassSectionData[];
   } | null>(null);
   const [selectedShortIds, setSelectedShortIds] = useState<string[]>([]);
 
@@ -977,11 +1120,15 @@ export default function App() {
             setClasses(data.classes);
           }
         }
+        if (data && Array.isArray(data.calendarEvents)) {
+          setCalendarEvents(data.calendarEvents);
+        }
       } else {
         // First-time user: persist current client-side state into Firestore automatically
         try {
           const sanitizedClasses = JSON.parse(JSON.stringify(classes));
-          setDoc(docRef, { classes: sanitizedClasses }, { merge: true })
+          const sanitizedEvents = JSON.parse(JSON.stringify(calendarEvents));
+          setDoc(docRef, { classes: sanitizedClasses, calendarEvents: sanitizedEvents }, { merge: true })
             .then(() => {
               lastFirestoreDataRef.current = JSON.stringify(classes);
             })
@@ -1033,12 +1180,32 @@ export default function App() {
               setSyncErrorMessage("Database save rejected. Check Firebase rules.");
             }
           });
-      } catch (prepErr) {
+      } catch (err) {
         setIsSyncing(false);
-        console.error("Failed to prepare classes for Firestore write: ", prepErr);
+        console.error("Prep error: ", err);
       }
     }
   }, [classes, user]);
+
+  // Sync calendar events to localStorage and Firestore
+  useEffect(() => {
+    try {
+      localStorage.setItem('omni_calendar_events', JSON.stringify(calendarEvents));
+    } catch (e) {
+      console.warn("Could not save calendar events to localStorage", e);
+    }
+
+    if (!user || !isInitialDocFetched.current) return;
+    const docRef = doc(db, 'users', user.uid);
+    try {
+      const sanitizedEvents = JSON.parse(JSON.stringify(calendarEvents));
+      setDoc(docRef, { calendarEvents: sanitizedEvents }, { merge: true }).catch(err => {
+        console.error("Firestore sync calendar events failed: ", err);
+      });
+    } catch (e) {
+      console.error("Prep error for calendar events: ", e);
+    }
+  }, [calendarEvents, user]);
 
   const [usernameInput, setUsernameInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
@@ -1358,82 +1525,20 @@ export default function App() {
     processModalRosterFile(file);
   };
 
-  const processModalRosterFile = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      try {
-        const data = evt.target?.result;
-        let jsonRows: any[] = [];
-
-        const workbook = XLSX.read(data, { type: 'binary' });
-        const firstSheet = workbook.SheetNames[0];
-        jsonRows = XLSX.utils.sheet_to_json<any>(workbook.Sheets[firstSheet]);
-
-        if (!jsonRows || jsonRows.length === 0) {
-          setCreatedClassFileError("The uploaded file contains zero records or is corrupted.");
-          return;
-        }
-
-        const normalizedRows = jsonRows.map(row => {
-          const keys = Object.keys(row);
-          const normalized: any = {};
-          keys.forEach(k => {
-            normalized[k.trim().toLowerCase().replace(/\s+/g, '')] = row[k];
-          });
-          return { original: row, norm: normalized };
-        });
-
-        const idKeys = ['idnumber', 'id', 'studentid', 'studentnumber'];
-        const firstKeys = ['firstname', 'first', 'givenname'];
-        const lastKeys = ['lastname', 'last', 'surname'];
-
-        let resolvedIdKeySrc = '';
-        let resolvedFirstKeySrc = '';
-        let resolvedLastKeySrc = '';
-
-        for (const row of normalizedRows) {
-          const keys = Object.keys(row.original);
-          keys.forEach(k => {
-            const cleanK = k.trim().toLowerCase().replace(/\s+/g, '');
-            if (idKeys.includes(cleanK) && !resolvedIdKeySrc) resolvedIdKeySrc = k;
-            if (firstKeys.includes(cleanK) && !resolvedFirstKeySrc) resolvedFirstKeySrc = k;
-            if (lastKeys.includes(cleanK) && !resolvedLastKeySrc) resolvedLastKeySrc = k;
-          });
-          if (resolvedIdKeySrc && resolvedFirstKeySrc && resolvedLastKeySrc) break;
-        }
-
-        if (!resolvedIdKeySrc || !resolvedFirstKeySrc || !resolvedLastKeySrc) {
-          setCreatedClassFileError(`Columns matching 'ID Number', 'First Name', and 'Last Name' were not located.`);
-          return;
-        }
-
-        const parsedStudents: Student[] = jsonRows.map(r => {
-          const fName = String(r[resolvedFirstKeySrc] || '').trim();
-          const lName = String(r[resolvedLastKeySrc] || '').trim();
-          return {
-            id: String(r[resolvedIdKeySrc] || '').trim(),
-            firstName: fName,
-            lastName: lName,
-            fullName: `${fName} ${lName}`
-          };
-        }).filter(st => st.id && st.firstName);
-
-        if (parsedStudents.length === 0) {
-          setCreatedClassFileError("Failed to parse valid student records containing names and ID numbers.");
-          return;
-        }
-
-        const sortedStudents = parsedStudents.sort((a, b) => 
-          a.firstName.localeCompare(b.firstName)
-        );
-
-        setCreatedClassStudents(sortedStudents);
-        setCreatedClassFileSuccess(`Successfully recognized ${sortedStudents.length} student records from file.`);
-      } catch (err: any) {
-        setCreatedClassFileError(`Error parsing file: ${err?.message || 'Unsupported format'}`);
+  const processModalRosterFile = async (file: File) => {
+    try {
+      const result = await parseAnyExcelFile(file, newClassNameInput.trim() || 'New Class');
+      const targetSec = result.sections[0];
+      if (!targetSec || targetSec.students.length === 0) {
+        setCreatedClassFileError("No student records found in file. Ensure file contains student IDs and names.");
+        return;
       }
-    };
-    reader.readAsBinaryString(file);
+
+      setCreatedClassStudents(targetSec.students);
+      setCreatedClassFileSuccess(`Successfully recognized ${targetSec.students.length} student records from spreadsheet.`);
+    } catch (err: any) {
+      setCreatedClassFileError(`Error parsing file: ${err?.message || 'Unsupported format'}`);
+    }
   };
 
   const handleModalRosterDragOver = (e: React.DragEvent) => {
@@ -1813,111 +1918,135 @@ export default function App() {
     processRosterFile(file);
   };
 
-  const processRosterFile = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      try {
-        const data = evt.target?.result;
-        let jsonRows: any[] = [];
+  const processRosterFile = async (file: File) => {
+    try {
+      const result = await parseAnyExcelFile(file, activeClass.name);
 
-        if (file.name.endsWith('.csv')) {
-          const workbook = XLSX.read(data, { type: 'binary' });
-          const firstSheet = workbook.SheetNames[0];
-          jsonRows = XLSX.utils.sheet_to_json<any>(workbook.Sheets[firstSheet]);
-        } else {
-          // Excel sheets
-          const workbook = XLSX.read(data, { type: 'binary' });
-          const firstSheet = workbook.SheetNames[0];
-          jsonRows = XLSX.utils.sheet_to_json<any>(workbook.Sheets[firstSheet]);
-        }
-
-        if (!jsonRows || jsonRows.length === 0) {
-          setFileError("The uploaded file contains zero records or is corrupted.");
-          return;
-        }
-
-        // Standardize column keys to locate values
-        const normalizedRows = jsonRows.map(row => {
-          const keys = Object.keys(row);
-          const normalized: any = {};
-          keys.forEach(k => {
-            normalized[k.trim().toLowerCase().replace(/\s+/g, '')] = row[k];
-          });
-          return { original: row, norm: normalized };
-        });
-
-        // Find matches
-        const idKeys = ['idnumber', 'id', 'studentid', 'studentnumber'];
-        const firstKeys = ['firstname', 'first', 'givenname'];
-        const lastKeys = ['lastname', 'last', 'surname'];
-
-        let resolvedIdKeySrc = '';
-        let resolvedFirstKeySrc = '';
-        let resolvedLastKeySrc = '';
-
-        for (const row of normalizedRows) {
-          const keys = Object.keys(row.original);
-          keys.forEach(k => {
-            const cleanK = k.trim().toLowerCase().replace(/\s+/g, '');
-            if (idKeys.includes(cleanK) && !resolvedIdKeySrc) resolvedIdKeySrc = k;
-            if (firstKeys.includes(cleanK) && !resolvedFirstKeySrc) resolvedFirstKeySrc = k;
-            if (lastKeys.includes(cleanK) && !resolvedLastKeySrc) resolvedLastKeySrc = k;
-          });
-          if (resolvedIdKeySrc && resolvedFirstKeySrc && resolvedLastKeySrc) break;
-        }
-
-        if (!resolvedIdKeySrc || !resolvedFirstKeySrc || !resolvedLastKeySrc) {
-          setFileError(`Columns matching 'ID Number', 'First Name', and 'Last Name' were not located. Found keys: ${Object.keys(jsonRows[0]).join(', ')}`);
-          return;
-        }
-
-        const parsedStudents: Student[] = jsonRows.map(r => {
-          const fName = String(r[resolvedFirstKeySrc] || '').trim();
-          const lName = String(r[resolvedLastKeySrc] || '').trim();
-          return {
-            id: String(r[resolvedIdKeySrc] || '').trim(),
-            firstName: fName,
-            lastName: lName,
-            fullName: `${fName} ${lName}`
-          };
-        }).filter(st => st.id && st.firstName);
-
-        if (parsedStudents.length === 0) {
-          setFileError("Failed to parse valid student records containing names and ID numbers.");
-          return;
-        }
-
-        // Sort dynamically on First Name
-        const sortedStudents = parsedStudents.sort((a, b) => 
-          a.firstName.localeCompare(b.firstName)
-        );
-
-        // Exclude / Stage students with ID lengths <= 6
-        const shortIds = sortedStudents.filter(st => st.id.length <= 6);
-        const normalIds = sortedStudents.filter(st => st.id.length > 6);
-
-        // Always set pendingImport so we can preview the full checklist, showcasing short IDs at the top as priority
+      if (result.isMultiSection) {
+        // Multi-section file (like Merged Attendance or Merged Grades for All Classes)
         setPendingImport({
           className: activeClass.name,
-          normal: normalIds,
-          short: shortIds
+          normal: result.sections.flatMap(s => s.students.filter(st => st.id.length > 6)),
+          short: result.sections.flatMap(s => s.students.filter(st => st.id.length <= 6)),
+          isMultiSection: true,
+          allSections: result.sections
         });
-        if (shortIds.length > 0) {
-          setFileSuccess(`Verification check required: Found ${shortIds.length} short student IDs. Previewing roster.`);
-        } else {
-          setFileSuccess(`Previewing imported student roster containing ${sortedStudents.length} records.`);
-        }
 
-      } catch (err: any) {
-        setFileError(`Error parsing workbook: ${err?.message || 'Unsupported format'}`);
+        setSelectedShortIds(result.sections.flatMap(s => s.students.map(st => st.id)));
+        setFileSuccess(`Detected multi-section workbook with ${result.sections.length} class sections and ${result.totalStudents} total students! Review below to import.`);
+      } else {
+        const sec = result.sections[0];
+        const shortIds = sec.students.filter(st => st.id.length <= 6);
+        const normalIds = sec.students.filter(st => st.id.length > 6);
+
+        const matchingClass = classes.find(c => c.name.toLowerCase() === sec.className.toLowerCase());
+        const targetClassName = matchingClass ? matchingClass.name : (classes.length > 0 ? activeClass.name : (sec.className || 'New Class Section'));
+
+        setPendingImport({
+          className: targetClassName,
+          normal: normalIds,
+          short: shortIds,
+          attendanceDates: sec.attendanceDates,
+          attendance: sec.attendance,
+          assessments: sec.assessments,
+          grades: sec.grades
+        });
+
+        setSelectedShortIds(sec.students.map(s => s.id));
+
+        let successMsg = `Previewing imported spreadsheet containing ${sec.students.length} student records.`;
+        if (sec.attendanceDates && sec.attendanceDates.length > 0) {
+          successMsg += ` Includes ${sec.attendanceDates.length} attendance date logs.`;
+        }
+        if (sec.assessments && sec.assessments.length > 0) {
+          successMsg += ` Includes ${sec.assessments.length} assessment columns.`;
+        }
+        setFileSuccess(successMsg);
       }
-    };
-    reader.readAsBinaryString(file);
+    } catch (err: any) {
+      setFileError(`Error parsing spreadsheet: ${err?.message || 'Unsupported format'}`);
+    }
   };
 
   // Commit Staging Roster with Checkbox Selection
   const handleConfirmPendingImport = () => {
     if (!pendingImport) return;
+
+    if (pendingImport.isMultiSection && pendingImport.allSections) {
+      // Multi-section merge into state
+      setClasses(prev => {
+        let updated = [...prev];
+        pendingImport.allSections!.forEach(sec => {
+          const existingIdx = updated.findIndex(c => c.name.toLowerCase() === sec.className.toLowerCase());
+          if (existingIdx >= 0) {
+            const existing = updated[existingIdx];
+            // Merge students (preserve existing records / colors)
+            const studentMap = new Map<string, Student>();
+            existing.students.forEach(s => studentMap.set(s.id, s));
+            sec.students.forEach(s => {
+              if (studentMap.has(s.id)) {
+                studentMap.set(s.id, { ...studentMap.get(s.id)!, ...s });
+              } else {
+                studentMap.set(s.id, s);
+              }
+            });
+            const mergedStudents = Array.from(studentMap.values()).sort((a, b) => a.firstName.localeCompare(b.firstName));
+
+            // Merge attendance dates and records
+            const existingDates = existing.attendanceDates || [];
+            const newDates = sec.attendanceDates || [];
+            const mergedDates = Array.from(new Set([...newDates, ...existingDates]));
+
+            const mergedAtt = { ...existing.attendance };
+            if (sec.attendance) {
+              Object.keys(sec.attendance).forEach(stId => {
+                mergedAtt[stId] = { ...(mergedAtt[stId] || {}), ...(sec.attendance![stId] || {}) };
+              });
+            }
+
+            // Merge assessments and grades
+            const existingAssessments = existing.assessments || [];
+            const newAssessments = sec.assessments || [];
+            const assessMap = new Map<string, Assessment>();
+            existingAssessments.forEach(a => assessMap.set(a.name.toLowerCase(), a));
+            newAssessments.forEach(a => assessMap.set(a.name.toLowerCase(), a));
+            const mergedAssessments = Array.from(assessMap.values());
+
+            const mergedGrades = { ...existing.grades };
+            if (sec.grades) {
+              Object.keys(sec.grades).forEach(stId => {
+                mergedGrades[stId] = { ...(mergedGrades[stId] || {}), ...(sec.grades![stId] || {}) };
+              });
+            }
+
+            updated[existingIdx] = {
+              ...existing,
+              students: mergedStudents,
+              attendanceDates: mergedDates.length > 0 ? mergedDates : existing.attendanceDates,
+              attendance: mergedAtt,
+              assessments: mergedAssessments.length > 0 ? mergedAssessments : existing.assessments,
+              grades: mergedGrades
+            };
+          } else {
+            // New class section from file
+            updated.push({
+              name: sec.className,
+              students: sec.students,
+              attendanceDates: sec.attendanceDates,
+              attendance: sec.attendance,
+              assessments: sec.assessments,
+              grades: sec.grades,
+              schedule: []
+            });
+          }
+        });
+        return updated;
+      });
+
+      setPendingImport(null);
+      setFileSuccess(`Successfully imported ${pendingImport.allSections.length} class sections from spreadsheet!`);
+      return;
+    }
 
     // Filter students based on what is checked
     const approvedShortStudents = pendingImport.short.filter(st => 
@@ -1931,27 +2060,80 @@ export default function App() {
       a.firstName.localeCompare(b.firstName)
     );
 
-    setClasses(prev => prev.map(cl => {
-      if (cl.name === pendingImport.className) {
-        const nextAtt: any = {};
-        const nextGrades: any = {};
-        consolidatedList.forEach(st => {
-          nextAtt[st.id] = cl.attendance[st.id] || {};
-          nextGrades[st.id] = cl.grades[st.id] || {};
-        });
+    setClasses(prev => {
+      const matchIdx = prev.findIndex(c => c.name.toLowerCase() === pendingImport.className.toLowerCase());
+      if (matchIdx >= 0) {
+        return prev.map((cl, idx) => {
+          if (idx !== matchIdx) return cl;
+          // Attendance records
+          const nextAtt: any = { ...cl.attendance };
+          consolidatedList.forEach(st => {
+            if (!nextAtt[st.id]) nextAtt[st.id] = cl.attendance[st.id] || {};
+            if (pendingImport.attendance && pendingImport.attendance[st.id]) {
+              nextAtt[st.id] = { ...nextAtt[st.id], ...pendingImport.attendance[st.id] };
+            }
+          });
 
-        return {
-          ...cl,
-          students: consolidatedList,
-          attendance: nextAtt,
-          grades: nextGrades
-        };
+          // Attendance Dates
+          const existingDates = cl.attendanceDates || [];
+          const importedDates = pendingImport.attendanceDates || [];
+          const mergedDates = Array.from(new Set([...importedDates, ...existingDates]));
+
+          // Grades
+          const nextGrades: any = { ...cl.grades };
+          consolidatedList.forEach(st => {
+            if (!nextGrades[st.id]) nextGrades[st.id] = cl.grades[st.id] || {};
+            if (pendingImport.grades && pendingImport.grades[st.id]) {
+              nextGrades[st.id] = { ...nextGrades[st.id], ...pendingImport.grades[st.id] };
+            }
+          });
+
+          // Assessments
+          const existingAssess = cl.assessments || [];
+          const importedAssess = pendingImport.assessments || [];
+          const assessMap = new Map<string, Assessment>();
+          existingAssess.forEach(a => assessMap.set(a.name.toLowerCase(), a));
+          importedAssess.forEach(a => assessMap.set(a.name.toLowerCase(), a));
+          const mergedAssess = Array.from(assessMap.values());
+
+          return {
+            ...cl,
+            students: consolidatedList,
+            attendanceDates: mergedDates.length > 0 ? mergedDates : cl.attendanceDates,
+            attendance: nextAtt,
+            assessments: mergedAssess.length > 0 ? mergedAssess : cl.assessments,
+            grades: nextGrades
+          };
+        });
+      } else {
+        return [
+          ...prev,
+          {
+            name: pendingImport.className,
+            students: consolidatedList,
+            attendanceDates: pendingImport.attendanceDates || [],
+            attendance: pendingImport.attendance || {},
+            assessments: pendingImport.assessments || [],
+            grades: pendingImport.grades || {},
+            schedule: []
+          }
+        ];
       }
-      return cl;
-    }));
+    });
+
+    if (classes.length === 0 || !activeClassName) {
+      setActiveClassName(pendingImport.className);
+    }
 
     setPendingImport(null);
-    setFileSuccess(`Successfully imported roster containing ${consolidatedList.length} records.`);
+    let msg = `Successfully imported roster containing ${consolidatedList.length} records.`;
+    if (pendingImport.attendanceDates && pendingImport.attendanceDates.length > 0) {
+      msg += ` Restored ${pendingImport.attendanceDates.length} attendance date logs.`;
+    }
+    if (pendingImport.assessments && pendingImport.assessments.length > 0) {
+      msg += ` Restored ${pendingImport.assessments.length} assessment columns.`;
+    }
+    setFileSuccess(msg);
   };
 
   // Deselects all short IDs from check list instantly
@@ -2091,7 +2273,69 @@ export default function App() {
     setTimeout(() => setAddStudentSuccessMsg(null), 3500);
   };
 
-  // Single Class Exporters
+  // Single Class Exporters with Auto Column Width Formatting
+  const handleExportFullClass = (targetClass: ClassSection = activeClass) => {
+    if (!targetClass || targetClass.students.length === 0) {
+      alert("No student records found in this class section.");
+      return;
+    }
+
+    const dates = getAttendanceDates(targetClass);
+    const assessCols = (targetClass.assessments || []).map(a => `${a.name} (Max ${a.maxMark || 100}, ${a.weight}%)`);
+    const headers = [
+      'ID Number',
+      'Full Name',
+      ...assessCols,
+      'Final Grade',
+      '', // Distinction separator column between grades and attendance
+      'Attendance Summary',
+      ...dates.map(d => formatDisplayDate(d))
+    ];
+
+    const aoa: any[][] = [];
+    // 1. Add Class Section banner so importer immediately recognizes the exact class
+    aoa.push([`🏫 ${targetClass.name}`]);
+    // 2. Add header row
+    aoa.push(headers);
+
+    // 3. Add student data rows
+    targetClass.students.forEach(st => {
+      const row: any[] = [st.id, st.fullName];
+      
+      // Grade values closer to student names
+      (targetClass.assessments || []).forEach(ass => {
+        row.push(targetClass.grades[st.id]?.[ass.name] ?? 0);
+      });
+
+      // Final Grade
+      row.push(calculateFinalGrade(st.id, targetClass));
+
+      // Empty separator column
+      row.push('');
+
+      // Attendance summary showing how many lectures attended, e.g. (2/6 lectures 33%)
+      const totalDates = dates.length;
+      const attendedCount = dates.filter(d => targetClass.attendance[st.id]?.[d] === 'Attended').length;
+      const pct = totalDates > 0 ? Math.round((attendedCount / totalDates) * 100) : 0;
+      row.push(`(${attendedCount}/${totalDates} lectures ${pct}%)`);
+
+      // Attendance date values
+      dates.forEach(d => {
+        row.push(targetClass.attendance[st.id]?.[d] ?? 'Not Taken');
+      });
+
+      aoa.push(row);
+    });
+
+    const worksheet = XLSX.utils.aoa_to_sheet(aoa);
+    applyAutoColumnWidths(worksheet, aoa);
+    const workbook = XLSX.utils.book_new();
+    const safeSheetName = (targetClass.name || 'Full Class Info').replace(/[:\\/?*\[\]]/g, '').slice(0, 31);
+    XLSX.utils.book_append_sheet(workbook, worksheet, safeSheetName || 'Full Class Info');
+
+    XLSX.writeFile(workbook, `Full_Info_${targetClass.name.replace(/\s+/g, '_')}.xlsx`);
+  };
+
   const handleExportGrades = () => {
     const tableData = activeClass.students.map(s => {
       const row: any = {
@@ -2109,6 +2353,7 @@ export default function App() {
     });
 
     const worksheet = XLSX.utils.json_to_sheet(tableData);
+    applyAutoColumnWidthsToTable(worksheet, tableData);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Grades Roster');
     
@@ -2131,6 +2376,7 @@ export default function App() {
     });
 
     const worksheet = XLSX.utils.json_to_sheet(tableData);
+    applyAutoColumnWidthsToTable(worksheet, tableData);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Attendance Ledger');
 
@@ -2138,8 +2384,8 @@ export default function App() {
   };
 
   // GLOBAL MULTI-CLASS MERGED DOWNLOADING SYSTEM
-  // Downloads structured sheets containing exactly 2 lines of empty space between class sections!
-  const handleExportMerged = (type: 'grades' | 'attendance') => {
+  // Downloads structured sheets with auto-formatted column widths and metadata
+  const handleExportMerged = (type: 'grades' | 'attendance' | 'full') => {
     const aoa: any[][] = [];
 
     classes.forEach(cl => {
@@ -2161,9 +2407,9 @@ export default function App() {
           });
           aoa.push(row);
         });
-      } else {
-        // Grades Roster
-        const assessCols = cl.assessments.map(a => a.name);
+      } else if (type === 'grades') {
+        // Grades Roster with max mark and weight metadata
+        const assessCols = cl.assessments.map(a => `${a.name} (Max ${a.maxMark || 100}, ${a.weight}%)`);
         const headers = ['ID Number', 'Full Name', ...assessCols, 'Final Grade'];
         aoa.push(headers);
 
@@ -2175,9 +2421,51 @@ export default function App() {
           row.push(calculateFinalGrade(st.id, cl));
           aoa.push(row);
         });
+      } else {
+        // FULL: Grades closer to names + empty separator column + Attendance Summary (e.g. (2/6 lectures 33%)) + Attendance dates
+        const dates = getAttendanceDates(cl);
+        const assessCols = (cl.assessments || []).map(a => `${a.name} (Max ${a.maxMark || 100}, ${a.weight}%)`);
+        const headers = [
+          'ID Number',
+          'Full Name',
+          ...assessCols,
+          'Final Grade',
+          '', // Distinction separator column between grades and attendance
+          'Attendance Summary',
+          ...dates.map(d => formatDisplayDate(d))
+        ];
+        aoa.push(headers);
+
+        cl.students.forEach(st => {
+          const row: any[] = [st.id, st.fullName];
+
+          // Grades closer to names
+          (cl.assessments || []).forEach(ass => {
+            row.push(cl.grades[st.id]?.[ass.name] ?? 0);
+          });
+
+          // Final Grade
+          row.push(calculateFinalGrade(st.id, cl));
+
+          // Empty separator column
+          row.push('');
+
+          // Attendance summary showing how many lectures attended, e.g. (2/6 lectures 33%)
+          const totalDates = dates.length;
+          const attendedCount = dates.filter(d => cl.attendance[st.id]?.[d] === 'Attended').length;
+          const pct = totalDates > 0 ? Math.round((attendedCount / totalDates) * 100) : 0;
+          row.push(`(${attendedCount}/${totalDates} lectures ${pct}%)`);
+
+          // Individual attendance date columns
+          dates.forEach(d => {
+            row.push(cl.attendance[st.id]?.[d] ?? 'Not Taken');
+          });
+
+          aoa.push(row);
+        });
       }
 
-      // 3. Write exactly 2 lines of empty cell structures
+      // 3. Write exactly 2 lines of empty cell structures between sections
       aoa.push([]);
       aoa.push([]);
     });
@@ -2188,10 +2476,16 @@ export default function App() {
     }
 
     const worksheet = XLSX.utils.aoa_to_sheet(aoa);
+    applyAutoColumnWidths(worksheet, aoa);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, `Merged_${type.charAt(0).toUpperCase() + type.slice(1)}`);
+    const sheetName = type === 'full' ? 'Merged_Full_Info' : `Merged_${type.charAt(0).toUpperCase() + type.slice(1)}`;
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
 
-    XLSX.writeFile(workbook, `Merged_${type.charAt(0).toUpperCase() + type.slice(1)}_All_Classes.xlsx`);
+    const fileName = type === 'full'
+      ? 'Merged_Full_Info_All_Classes.xlsx'
+      : `Merged_${type.charAt(0).toUpperCase() + type.slice(1)}_All_Classes.xlsx`;
+
+    XLSX.writeFile(workbook, fileName);
   };
 
   // Cross-section student search logic
@@ -2340,21 +2634,21 @@ export default function App() {
         ) : (
           <div className="flex flex-col gap-3">
             <div className="overflow-x-auto border border-[#E8ECF5] rounded-2xl shadow-xs bg-white" id="timetable-proportional-timeline">
-              <div className="min-w-[1080px] flex flex-col">
+              <div className="min-w-[820px] sm:min-w-[1080px] flex flex-col">
                 
                 {/* Timeline Header: First Column = Day of Week, Rest = Hours from 8:00 AM */}
                 <div className="flex items-stretch border-b border-[#E8ECF5] bg-[#E3EAFA] text-[#252B3B] select-none sticky top-0 z-20">
                   {/* First Column Header: Days */}
-                  <div className="w-52 shrink-0 px-4 py-3.5 border-r border-[#E8ECF5] sticky left-0 z-30 bg-[#E3EAFA] flex items-center justify-between shadow-[2px_0_4px_-2px_rgba(0,0,0,0.05)]">
-                    <div className="flex flex-col">
-                      <span className="text-[11px] font-black uppercase tracking-wider text-[#252B3B]">
-                        Day of Week
+                  <div className="w-28 sm:w-52 shrink-0 px-2.5 sm:px-4 py-3 sm:py-3.5 border-r border-[#E8ECF5] sticky left-0 z-30 bg-[#E3EAFA] flex items-center justify-between shadow-[2px_0_4px_-2px_rgba(0,0,0,0.05)]">
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-[11px] font-black uppercase tracking-wider text-[#252B3B] truncate">
+                        Day
                       </span>
-                      <span className="text-[9.5px] text-[#747D91] font-medium">
-                        Sunday → Saturday
+                      <span className="text-[9.5px] text-[#747D91] font-medium hidden sm:inline">
+                        Sun → Sat
                       </span>
                     </div>
-                    <span className="text-[10px] font-mono font-bold text-white bg-[#4D5A8F] px-2 py-0.5 rounded-md shadow-3xs">
+                    <span className="text-[9.5px] sm:text-[10px] font-mono font-bold text-white bg-[#4D5A8F] px-1.5 sm:px-2 py-0.5 rounded-md shadow-3xs">
                       {totalLecturesAcrossWeek} {totalLecturesAcrossWeek === 1 ? 'Slot' : 'Slots'}
                     </span>
                   </div>
@@ -2462,18 +2756,19 @@ export default function App() {
                       <div key={day} className={`flex items-stretch transition-colors ${isToday ? 'bg-[#E3EAFA]/30' : 'hover:bg-[#F5F8FF]/80'}`}>
                         {/* FIRST COLUMN: Weekday Name, Lecture Count, and Quick Add Action */}
                         <div 
-                          className={`w-52 shrink-0 p-3.5 border-r border-[#E8ECF5] sticky left-0 z-10 flex flex-col justify-between transition-colors shadow-[2px_0_4px_-2px_rgba(0,0,0,0.05)] ${
+                          className={`w-28 sm:w-52 shrink-0 p-2 sm:p-3.5 border-r border-[#E8ECF5] sticky left-0 z-10 flex flex-col justify-between transition-colors shadow-[2px_0_4px_-2px_rgba(0,0,0,0.05)] ${
                             isToday ? 'bg-[#E3EAFA] border-r-2 border-r-[#4D5A8F]' : 'bg-[#F5F8FF]'
                           }`}
                           style={{ height: `${rowHeight}px` }}
                         >
                           <div className="flex items-start justify-between gap-1">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className={`text-sm font-black tracking-tight ${isToday ? 'text-[#4D5A8F]' : 'text-[#252B3B]'}`}>
-                                {day}
+                            <div className="flex items-center gap-1 min-w-0">
+                              <span className={`text-xs sm:text-sm font-black tracking-tight truncate ${isToday ? 'text-[#4D5A8F]' : 'text-[#252B3B]'}`}>
+                                <span className="sm:hidden">{day.slice(0, 3)}</span>
+                                <span className="hidden sm:inline">{day}</span>
                               </span>
                               {isToday && (
-                                <span className="px-1.5 py-0.2 rounded-full text-[9px] font-black uppercase tracking-wider bg-[#4D5A8F] text-white shadow-3xs">
+                                <span className="px-1 py-0.2 rounded-full text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider bg-[#4D5A8F] text-white shadow-3xs">
                                   Today
                                 </span>
                               )}
@@ -2490,7 +2785,7 @@ export default function App() {
                                 setScheduleModalEndPeriod('AM');
                                 setIsAddScheduleModalOpen(true);
                               }}
-                              className="p-1 rounded-lg text-[#747D91] hover:text-[#4D5A8F] hover:bg-[#E3EAFA] border border-transparent hover:border-[#B3C0E6] transition-all cursor-pointer shadow-none hover:shadow-3xs active:scale-95"
+                              className="p-1 rounded-lg text-[#747D91] hover:text-[#4D5A8F] hover:bg-[#E3EAFA] border border-transparent hover:border-[#B3C0E6] transition-all cursor-pointer shadow-none hover:shadow-3xs active:scale-95 shrink-0"
                               title={`Add lecture slot on ${day}`}
                             >
                               <Plus className="h-3.5 w-3.5" />
@@ -2675,18 +2970,797 @@ export default function App() {
     );
   };
 
+  // Calendar & Agenda System Handlers & Renderer
+  const handlePrevCalendarMonth = () => {
+    setCalendarViewDate(prev => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+  };
+
+  const handleNextCalendarMonth = () => {
+    setCalendarViewDate(prev => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
+  };
+
+  const handleJumpToToday = () => {
+    const now = new Date();
+    setCalendarViewDate(new Date(now.getFullYear(), now.getMonth(), 1));
+    setCalendarSelectedDate(getTodayYMD());
+  };
+
+  const handleOpenAddEvent = (date?: string) => {
+    const targetDate = date || calendarSelectedDate || getTodayYMD();
+    setEditingEventId(null);
+    setEventTitleInput('');
+    setEventDateInput(targetDate);
+    setEventTimeInput('10:00 AM');
+    setIsEventAllDay(false);
+    setEventTypeInput('exam');
+    setEventClassInput(classes.length > 0 ? (activeClass?.name || 'All Classes') : 'All Classes');
+    setEventDescriptionInput('');
+    setEventModalError(null);
+    setIsEventModalOpen(true);
+  };
+
+  const handleOpenEditEvent = (evt: CalendarEvent) => {
+    setEditingEventId(evt.id);
+    setEventTitleInput(evt.title);
+    setEventDateInput(evt.date);
+    setEventTimeInput(evt.time || '10:00 AM');
+    setIsEventAllDay(!evt.time || evt.time === 'All Day');
+    setEventTypeInput(evt.type);
+    setEventClassInput(evt.className || 'All Classes');
+    setEventDescriptionInput(evt.description || '');
+    setEventModalError(null);
+    setIsEventModalOpen(true);
+  };
+
+  const handleSaveEvent = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmedTitle = eventTitleInput.trim();
+    if (!trimmedTitle) {
+      setEventModalError('Please enter an event or note title.');
+      return;
+    }
+    if (!eventDateInput) {
+      setEventModalError('Please choose a valid date.');
+      return;
+    }
+
+    const payload: CalendarEvent = {
+      id: editingEventId || `evt-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      title: trimmedTitle,
+      date: eventDateInput,
+      time: isEventAllDay ? 'All Day' : (eventTimeInput.trim() || 'All Day'),
+      type: eventTypeInput,
+      className: eventClassInput === 'all' || !eventClassInput ? 'All Classes' : eventClassInput,
+      description: eventDescriptionInput.trim() || undefined,
+      createdAt: editingEventId
+        ? (calendarEvents.find(ev => ev.id === editingEventId)?.createdAt || Date.now())
+        : Date.now()
+    };
+
+    if (editingEventId) {
+      setCalendarEvents(prev => prev.map(ev => ev.id === editingEventId ? payload : ev));
+    } else {
+      setCalendarEvents(prev => [...prev, payload]);
+    }
+
+    setCalendarSelectedDate(eventDateInput);
+    setIsEventModalOpen(false);
+  };
+
+  const handleDeleteEvent = (id: string) => {
+    setCalendarEvents(prev => prev.filter(ev => ev.id !== id));
+    setConfirmDeleteEventTarget(null);
+  };
+
+  const getEventTypeBadgeInfo = (type: CalendarEventType) => {
+    switch (type) {
+      case 'exam':
+        return {
+          label: 'Exam',
+          badgeBg: 'bg-purple-100 text-purple-900 border-purple-200',
+          dotBg: 'bg-purple-600',
+          chipBg: 'bg-purple-50 text-purple-900 hover:bg-purple-100 border-purple-200'
+        };
+      case 'meeting':
+        return {
+          label: 'Meeting',
+          badgeBg: 'bg-sky-100 text-sky-900 border-sky-200',
+          dotBg: 'bg-sky-600',
+          chipBg: 'bg-sky-50 text-sky-900 hover:bg-sky-100 border-sky-200'
+        };
+      case 'lecture':
+        return {
+          label: 'Lecture',
+          badgeBg: 'bg-emerald-100 text-emerald-900 border-emerald-200',
+          dotBg: 'bg-emerald-600',
+          chipBg: 'bg-emerald-50 text-emerald-900 hover:bg-emerald-100 border-emerald-200'
+        };
+      case 'deadline':
+        return {
+          label: 'Deadline',
+          badgeBg: 'bg-amber-100 text-amber-900 border-amber-200',
+          dotBg: 'bg-amber-600',
+          chipBg: 'bg-amber-50 text-amber-900 hover:bg-amber-100 border-amber-200'
+        };
+      case 'note':
+      default:
+        return {
+          label: 'Note',
+          badgeBg: 'bg-[#E3EAFA] text-[#4D5A8F] border-[#B3C0E6]',
+          dotBg: 'bg-[#4D5A8F]',
+          chipBg: 'bg-[#F5F8FF] text-[#252B3B] hover:bg-[#E3EAFA] border-[#CED8F2]'
+        };
+    }
+  };
+
+  const renderCalendarAgendaView = () => {
+    const year = calendarViewDate.getFullYear();
+    const month = calendarViewDate.getMonth();
+    const monthName = calendarViewDate.toLocaleString('default', { month: 'long' });
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    
+    // Week starts on Monday (0=Mon, 1=Tue, ..., 6=Sun)
+    const firstDayIndex = (new Date(year, month, 1).getDay() + 6) % 7;
+    const prevMonthDays = new Date(year, month, 0).getDate();
+    const todayYMD = getTodayYMD();
+
+    // Prepare grid cells
+    interface GridCell {
+      dayNumber: number;
+      dateStr: string;
+      isCurrentMonth: boolean;
+      isToday: boolean;
+      isSelected: boolean;
+    }
+
+    const gridCells: GridCell[] = [];
+
+    // 1. Previous month trailing days
+    for (let i = firstDayIndex - 1; i >= 0; i--) {
+      const dayNum = prevMonthDays - i;
+      const prevDate = new Date(year, month - 1, dayNum);
+      const dateStr = formatDateToYMD(prevDate.getFullYear(), prevDate.getMonth() + 1, dayNum);
+      gridCells.push({
+        dayNumber: dayNum,
+        dateStr,
+        isCurrentMonth: false,
+        isToday: dateStr === todayYMD,
+        isSelected: dateStr === calendarSelectedDate
+      });
+    }
+
+    // 2. Current month days
+    for (let dayNum = 1; dayNum <= daysInMonth; dayNum++) {
+      const dateStr = formatDateToYMD(year, month + 1, dayNum);
+      gridCells.push({
+        dayNumber: dayNum,
+        dateStr,
+        isCurrentMonth: true,
+        isToday: dateStr === todayYMD,
+        isSelected: dateStr === calendarSelectedDate
+      });
+    }
+
+    // 3. Next month leading days to complete grid
+    const remainingCells = 7 - (gridCells.length % 7);
+    if (remainingCells < 7) {
+      for (let dayNum = 1; dayNum <= remainingCells; dayNum++) {
+        const nextDate = new Date(year, month + 1, dayNum);
+        const dateStr = formatDateToYMD(nextDate.getFullYear(), nextDate.getMonth() + 1, dayNum);
+        gridCells.push({
+          dayNumber: dayNum,
+          dateStr,
+          isCurrentMonth: false,
+          isToday: dateStr === todayYMD,
+          isSelected: dateStr === calendarSelectedDate
+        });
+      }
+    }
+
+    // Filtered calendar events based on class and type filters
+    const filteredEvents = calendarEvents.filter(evt => {
+      if (calendarClassFilter !== 'all' && evt.className && evt.className !== 'All Classes' && evt.className !== calendarClassFilter) {
+        return false;
+      }
+      if (calendarTypeFilter !== 'all' && evt.type !== calendarTypeFilter) {
+        return false;
+      }
+      return true;
+    });
+
+    // Events for the selected date
+    const selectedDateEvents = filteredEvents.filter(evt => evt.date === calendarSelectedDate);
+
+    // Selected date details
+    const selectedDateParts = calendarSelectedDate ? calendarSelectedDate.split('-').map(Number) : [year, month + 1, 1];
+    const selectedDateObj = new Date(selectedDateParts[0], selectedDateParts[1] - 1, selectedDateParts[2]);
+    const selectedWeekdayName: DayOfWeek = DAY_OF_WEEK_NAMES[selectedDateObj.getDay()];
+    const relativeLabel = getRelativeDateLabel(calendarSelectedDate);
+
+    // Recurring timetable classes for this selected weekday
+    const recurringSlotsForDate = classes.flatMap(cls => {
+      if (!cls.schedule) return [];
+      if (calendarClassFilter !== 'all' && cls.name !== calendarClassFilter) return [];
+      return cls.schedule
+        .filter(slot => slot.day === selectedWeekdayName)
+        .map(slot => ({
+          ...slot,
+          className: cls.name
+        }));
+    });
+
+    return (
+      <div className="flex flex-col gap-6 animate-fade-in" id="calendar-agenda-view-container">
+        {/* Top Calendar Toolbar */}
+        <div className="bg-white rounded-2xl border border-[#E8ECF5] p-5 shadow-xs flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div className="flex items-center gap-3.5">
+            <div className="p-3 bg-[#E3EAFA] text-[#4D5A8F] rounded-2xl shadow-3xs border border-[#CED8F2]">
+              <CalendarDays className="h-6 w-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-xl font-black text-[#252B3B] tracking-tight">Calendar &amp; Agenda Book</h2>
+                <span className="text-[11px] bg-[#E3EAFA] text-[#4D5A8F] font-bold px-2.5 py-0.5 rounded-full border border-[#B3C0E6]/60">
+                  {filteredEvents.length} {filteredEvents.length === 1 ? 'Record' : 'Records'}
+                </span>
+              </div>
+              <p className="text-xs text-[#747D91] mt-0.5">
+                Assign exam dates, organize meeting hours, set assignment deadlines, and track daily class notes.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5 flex-wrap">
+            {/* View Switch: Month Grid vs Agenda List */}
+            <div className="inline-flex bg-[#F5F8FF] p-1 rounded-xl border border-[#E8ECF5] shadow-3xs">
+              <button
+                type="button"
+                onClick={() => setCalendarViewMode('month')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  calendarViewMode === 'month'
+                    ? 'bg-[#4D5A8F] text-white shadow-3xs'
+                    : 'text-[#747D91] hover:text-[#252B3B]'
+                }`}
+                title="Month Grid View"
+              >
+                <LayoutGrid className="h-3.5 w-3.5" />
+                <span>Month</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setCalendarViewMode('agenda')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  calendarViewMode === 'agenda'
+                    ? 'bg-[#4D5A8F] text-white shadow-3xs'
+                    : 'text-[#747D91] hover:text-[#252B3B]'
+                }`}
+                title="Agenda List View"
+              >
+                <List className="h-3.5 w-3.5" />
+                <span>Agenda</span>
+              </button>
+            </div>
+
+            {/* Quick Add Event / Note Button */}
+            <button
+              type="button"
+              onClick={() => handleOpenAddEvent(calendarSelectedDate)}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-[#4D5A8F] hover:bg-[#3D4873] text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer active:scale-95 min-h-[40px] w-full sm:w-auto"
+              id="calendar-add-event-btn"
+            >
+              <CalendarPlus className="h-4 w-4" />
+              <span>Add Event / Note</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Filter Bar & Month Navigation */}
+        <div className="bg-white rounded-2xl border border-[#E8ECF5] p-3.5 sm:p-4 shadow-3xs flex flex-col md:flex-row md:items-center md:justify-between gap-3 sm:gap-4">
+          {/* Month / Year Navigator */}
+          <div className="flex items-center justify-between sm:justify-start gap-2">
+            <button
+              type="button"
+              onClick={handlePrevCalendarMonth}
+              className="p-2 bg-[#F5F8FF] hover:bg-[#E3EAFA] text-[#252B3B] rounded-xl border border-[#E8ECF5] transition-all cursor-pointer active:scale-95 shadow-3xs min-h-[38px] min-w-[38px] flex items-center justify-center"
+              title="Previous Month"
+              aria-label="Previous Month"
+            >
+              <ChevronLeft className="h-4 w-4 text-[#4D5A8F]" />
+            </button>
+
+            <span className="text-sm sm:text-base font-extrabold text-[#252B3B] min-w-[140px] sm:min-w-[160px] text-center font-mono">
+              {monthName} {year}
+            </span>
+
+            <button
+              type="button"
+              onClick={handleNextCalendarMonth}
+              className="p-2 bg-[#F5F8FF] hover:bg-[#E3EAFA] text-[#252B3B] rounded-xl border border-[#E8ECF5] transition-all cursor-pointer active:scale-95 shadow-3xs min-h-[38px] min-w-[38px] flex items-center justify-center"
+              title="Next Month"
+              aria-label="Next Month"
+            >
+              <ChevronRight className="h-4 w-4 text-[#4D5A8F]" />
+            </button>
+
+            <button
+              type="button"
+              onClick={handleJumpToToday}
+              className="px-3 py-1.5 bg-[#E3EAFA] hover:bg-[#CED8F2] text-[#4D5A8F] font-bold text-xs rounded-xl transition-all cursor-pointer border border-[#B3C0E6]/50 shadow-3xs min-h-[38px] flex items-center justify-center"
+            >
+              Today
+            </button>
+          </div>
+
+          {/* Filters: Class Section & Event Type (2 columns on mobile) */}
+          <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 w-full sm:w-auto">
+            {/* Class Section Filter */}
+            <div className="flex items-center gap-1.5 bg-[#F5F8FF] border border-[#E8ECF5] rounded-xl px-2.5 py-1.5 shadow-3xs min-h-[38px]">
+              <Tag className="h-3.5 w-3.5 text-[#6D7CB0] shrink-0" />
+              <label htmlFor="calendar-class-filter-select" className="sr-only">Filter by class section</label>
+              <select
+                id="calendar-class-filter-select"
+                value={calendarClassFilter}
+                onChange={(e) => setCalendarClassFilter(e.target.value)}
+                className="bg-transparent text-xs font-semibold text-[#252B3B] outline-none cursor-pointer w-full truncate"
+              >
+                <option value="all">All Classes</option>
+                {classes.map(c => (
+                  <option key={c.name} value={c.name}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Event Type Filter */}
+            <div className="flex items-center gap-1.5 bg-[#F5F8FF] border border-[#E8ECF5] rounded-xl px-2.5 py-1.5 shadow-3xs min-h-[38px]">
+              <Filter className="h-3.5 w-3.5 text-[#6D7CB0] shrink-0" />
+              <label htmlFor="calendar-type-filter-select" className="sr-only">Filter by event type</label>
+              <select
+                id="calendar-type-filter-select"
+                value={calendarTypeFilter}
+                onChange={(e) => setCalendarTypeFilter(e.target.value)}
+                className="bg-transparent text-xs font-semibold text-[#252B3B] outline-none cursor-pointer w-full truncate"
+              >
+                <option value="all">All Types</option>
+                <option value="exam">Exams</option>
+                <option value="meeting">Meetings</option>
+                <option value="lecture">Lectures</option>
+                <option value="deadline">Deadlines</option>
+                <option value="note">Notes &amp; Reminders</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {/* Calendar Body: Month Grid or Agenda List */}
+        {calendarViewMode === 'month' ? (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 items-start">
+            {/* Left 8 Cols: Month Calendar Grid */}
+            <div className="lg:col-span-8 bg-white rounded-2xl border border-[#E8ECF5] p-2.5 sm:p-5 shadow-xs flex flex-col gap-3">
+              {/* Day-of-week Headers */}
+              <div className="grid grid-cols-7 gap-1 sm:gap-2 text-center pb-2 border-b border-[#E8ECF5]">
+                {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((dayStr, idx) => (
+                  <div
+                    key={dayStr}
+                    className={`text-[10px] sm:text-xs font-extrabold uppercase tracking-wider py-1 ${
+                      idx >= 5 ? 'text-[#8F9DCC]' : 'text-[#4D5A8F]'
+                    }`}
+                  >
+                    {dayStr}
+                  </div>
+                ))}
+              </div>
+
+              {/* Day Cells Grid */}
+              <div className="grid grid-cols-7 gap-1 sm:gap-2">
+                {gridCells.map((cell) => {
+                  const cellEvents = filteredEvents.filter(e => e.date === cell.dateStr);
+                  const isSelected = cell.dateStr === calendarSelectedDate;
+
+                  return (
+                    <div
+                      key={cell.dateStr}
+                      onClick={() => setCalendarSelectedDate(cell.dateStr)}
+                      className={`min-h-[58px] sm:min-h-[105px] p-1 sm:p-2 rounded-xl border transition-all cursor-pointer flex flex-col justify-between group relative ${
+                        isSelected
+                          ? 'border-[#4D5A8F] ring-2 ring-[#4D5A8F]/30 bg-[#F5F8FF] shadow-3xs'
+                          : cell.isCurrentMonth
+                            ? 'bg-white hover:bg-[#F5F8FF] border-[#E8ECF5] hover:border-[#B3C0E6]'
+                            : 'bg-[#F5F8FF]/40 border-transparent text-[#747D91]/50 opacity-60 hover:opacity-100 hover:bg-[#F5F8FF]'
+                      }`}
+                    >
+                      {/* Cell Header: Day Number & Indicator */}
+                      <div className="flex items-center justify-between">
+                        <span
+                          className={`inline-flex items-center justify-center h-5 w-5 sm:h-6 sm:w-6 rounded-full text-[10px] sm:text-xs font-bold ${
+                            cell.isToday
+                              ? 'bg-[#4D5A8F] text-white shadow-3xs font-extrabold'
+                              : isSelected
+                                ? 'bg-[#CED8F2] text-[#252B3B]'
+                                : cell.isCurrentMonth
+                                  ? 'text-[#252B3B]'
+                                  : 'text-[#747D91]'
+                          }`}
+                        >
+                          {cell.dayNumber}
+                        </span>
+
+                        {/* Quick '+' Hover Add Button on tablet/desktop */}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenAddEvent(cell.dateStr);
+                          }}
+                          className="hidden sm:block opacity-0 group-hover:opacity-100 p-1 hover:bg-[#E3EAFA] text-[#4D5A8F] rounded-md transition-opacity cursor-pointer"
+                          title={`Add note or event on ${cell.dateStr}`}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+
+                      {/* Mobile Indicator Dots (clean touch screen pattern) */}
+                      <div className="flex sm:hidden items-center justify-center gap-0.5 mt-1 flex-wrap">
+                        {cellEvents.slice(0, 3).map((evt) => {
+                          const badge = getEventTypeBadgeInfo(evt.type);
+                          return (
+                            <span 
+                              key={evt.id} 
+                              className={`w-1.5 h-1.5 rounded-full ${badge.dotBg}`} 
+                              title={`${evt.title} (${badge.label})`}
+                            />
+                          );
+                        })}
+                        {cellEvents.length > 3 && (
+                          <span className="w-1 h-1 rounded-full bg-[#747D91]" />
+                        )}
+                      </div>
+
+                      {/* Tablet/Desktop Cell Event Chips (max 2 visible chips) */}
+                      <div className="hidden sm:flex flex-col gap-1 mt-1 flex-1 overflow-hidden">
+                        {cellEvents.slice(0, 2).map((evt) => {
+                          const badge = getEventTypeBadgeInfo(evt.type);
+                          return (
+                            <div
+                              key={evt.id}
+                              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded truncate border flex items-center gap-1 ${badge.chipBg}`}
+                              title={`${evt.title} (${badge.label}${evt.time ? ` • ${evt.time}` : ''})`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${badge.dotBg}`} />
+                              <span className="truncate">{evt.title}</span>
+                            </div>
+                          );
+                        })}
+
+                        {cellEvents.length > 2 && (
+                          <span className="text-[9px] font-bold text-[#6D7CB0] pl-1">
+                            +{cellEvents.length - 2} more
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Grid Footer Legend */}
+              <div className="flex items-center justify-between pt-3 border-t border-[#E8ECF5] text-[11px] text-[#747D91] flex-wrap gap-2">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-purple-600" />
+                    <span>Exam</span>
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-sky-600" />
+                    <span>Meeting</span>
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-600" />
+                    <span>Lecture</span>
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-amber-600" />
+                    <span>Deadline</span>
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#4D5A8F]" />
+                    <span>Note</span>
+                  </span>
+                </div>
+                <span className="text-[10px] font-mono text-[#747D91]">
+                  Click any date to inspect full agenda and notes
+                </span>
+              </div>
+            </div>
+
+            {/* Right 4 Cols: Selected Day Agenda & Note Inspector */}
+            <div className="lg:col-span-4 bg-white rounded-2xl border border-[#E8ECF5] p-5 shadow-xs flex flex-col gap-4 sticky top-6" id="calendar-day-agenda-inspector">
+              <div className="flex items-start justify-between border-b border-[#E8ECF5] pb-3.5">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-[#6D7CB0]">
+                      Day Agenda &amp; Notes
+                    </span>
+                    {relativeLabel && (
+                      <span className="text-[10px] bg-[#E3EAFA] text-[#4D5A8F] font-bold px-2 py-0.5 rounded-full border border-[#B3C0E6]/50">
+                        {relativeLabel}
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="text-base font-extrabold text-[#252B3B] mt-1 leading-snug">
+                    {formatFullDateString(calendarSelectedDate)}
+                  </h3>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleOpenAddEvent(calendarSelectedDate)}
+                  className="p-2 bg-[#E3EAFA] hover:bg-[#CED8F2] text-[#4D5A8F] rounded-xl transition-all cursor-pointer shadow-3xs active:scale-95 shrink-0"
+                  title="Add note or event for this date"
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              </div>
+
+              {/* Recurring Timetable Classes for this Weekday */}
+              {recurringSlotsForDate.length > 0 && (
+                <div className="bg-[#F5F8FF] rounded-xl border border-[#E8ECF5] p-3 flex flex-col gap-2">
+                  <div className="flex items-center gap-1.5 text-[11px] font-bold text-[#4D5A8F]">
+                    <Clock className="h-3.5 w-3.5" />
+                    <span>Weekly Class Schedule ({selectedWeekdayName})</span>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    {recurringSlotsForDate.map(slot => (
+                      <div key={slot.id} className="bg-white rounded-lg border border-[#E8ECF5] px-2.5 py-1.5 flex items-center justify-between text-xs shadow-3xs">
+                        <span className="font-bold text-[#252B3B] truncate">{slot.className}</span>
+                        <span className="font-mono text-[11px] text-[#6D7CB0] font-semibold shrink-0">
+                          {slot.startTime} - {slot.endTime}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Day Events & Notes Listing */}
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-[#252B3B] uppercase tracking-wider">
+                    Scheduled Notes &amp; Events ({selectedDateEvents.length})
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenAddEvent(calendarSelectedDate)}
+                    className="text-[11px] font-bold text-[#4D5A8F] hover:underline cursor-pointer"
+                  >
+                    + Add New
+                  </button>
+                </div>
+
+                {selectedDateEvents.length === 0 ? (
+                  <div className="py-8 flex flex-col items-center justify-center text-center bg-[#F5F8FF]/60 rounded-xl border border-dashed border-[#CED8F2] p-4">
+                    <CalendarDays className="h-8 w-8 text-[#8F9DCC] mb-2 opacity-60" />
+                    <span className="text-xs font-bold text-[#252B3B]">No entries for this date</span>
+                    <p className="text-[11px] text-[#747D91] mt-1 max-w-[220px]">
+                      Add an exam reminder, meeting hour, homework deadline, or general academic note.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenAddEvent(calendarSelectedDate)}
+                      className="mt-3 px-3 py-1.5 bg-[#4D5A8F] text-white font-bold text-xs rounded-xl shadow-xs hover:bg-[#3D4873] transition-all cursor-pointer"
+                    >
+                      + Add Note / Event
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2.5 max-h-[460px] overflow-y-auto pr-1">
+                    {selectedDateEvents.map(evt => {
+                      const badge = getEventTypeBadgeInfo(evt.type);
+                      return (
+                        <div
+                          key={evt.id}
+                          className="bg-white rounded-xl border border-[#E8ECF5] p-3.5 shadow-3xs flex flex-col gap-2 hover:border-[#B3C0E6] transition-all group"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${badge.badgeBg}`}>
+                                {badge.label}
+                              </span>
+                              {evt.className && (
+                                <span className="text-[10px] font-semibold bg-[#F5F8FF] text-[#252B3B] px-2 py-0.5 rounded-md border border-[#E8ECF5]">
+                                  {evt.className}
+                                </span>
+                              )}
+                              <span className="text-[10px] font-mono text-[#6D7CB0] font-bold">
+                                🕒 {evt.time || 'All Day'}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEditEvent(evt)}
+                                className="p-1 hover:bg-[#E3EAFA] text-[#4D5A8F] rounded-lg transition-colors cursor-pointer"
+                                title="Edit this entry"
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteEventTarget(evt)}
+                                className="p-1 hover:bg-rose-50 text-rose-600 rounded-lg transition-colors cursor-pointer"
+                                title="Delete this entry"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <h4 className="text-sm font-bold text-[#252B3B] tracking-tight">
+                            {evt.title}
+                          </h4>
+
+                          {evt.description && (
+                            <p className="text-xs text-[#747D91] whitespace-pre-line leading-relaxed bg-[#F5F8FF] p-2.5 rounded-lg border border-[#E8ECF5]">
+                              {evt.description}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* Full Agenda List View Mode */
+          <div className="bg-white rounded-2xl border border-[#E8ECF5] p-6 shadow-xs flex flex-col gap-5">
+            <div className="flex items-center justify-between pb-3 border-b border-[#E8ECF5]">
+              <div>
+                <h3 className="text-base font-extrabold text-[#252B3B]">Chronological Agenda Timeline</h3>
+                <p className="text-xs text-[#747D91]">
+                  Sorted agenda listing for all academic milestones, exams, and notes.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleOpenAddEvent()}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-[#4D5A8F] hover:bg-[#3D4873] text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>Create New Entry</span>
+              </button>
+            </div>
+
+            {filteredEvents.length === 0 ? (
+              <div className="py-12 flex flex-col items-center justify-center text-center">
+                <CalendarDays className="h-10 w-10 text-[#8F9DCC] mb-2" />
+                <span className="text-sm font-bold text-[#252B3B]">No calendar records match current filters</span>
+                <p className="text-xs text-[#747D91] mt-1 max-w-sm">
+                  Try clearing your filters or create a new event or note to populate your agenda.
+                </p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-4">
+                {/* Group events by date */}
+                {Array.from(new Set(filteredEvents.map(e => e.date)))
+                  .sort()
+                  .map(dateStr => {
+                    const groupEvents = filteredEvents.filter(e => e.date === dateStr);
+                    const isToday = dateStr === todayYMD;
+                    const relative = getRelativeDateLabel(dateStr);
+
+                    return (
+                      <div key={dateStr} className="flex flex-col gap-2.5">
+                        <div className="flex items-center gap-2.5 pt-2">
+                          <span className={`text-xs font-bold px-2.5 py-1 rounded-lg border ${
+                            isToday
+                              ? 'bg-[#4D5A8F] text-white border-[#4D5A8F]'
+                              : 'bg-[#E3EAFA] text-[#4D5A8F] border-[#B3C0E6]/60'
+                          }`}>
+                            {formatFullDateString(dateStr)}
+                          </span>
+                          {relative && (
+                            <span className="text-[10px] font-bold text-[#6D7CB0] bg-[#F5F8FF] px-2 py-0.5 rounded-full border border-[#E8ECF5]">
+                              {relative}
+                            </span>
+                          )}
+                          <div className="h-px bg-[#E8ECF5] flex-1" />
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                          {groupEvents.map(evt => {
+                            const badge = getEventTypeBadgeInfo(evt.type);
+                            return (
+                              <div
+                                key={evt.id}
+                                className="bg-white rounded-xl border border-[#E8ECF5] p-3.5 shadow-3xs flex flex-col justify-between gap-3 hover:border-[#B3C0E6] transition-all group"
+                              >
+                                <div className="flex flex-col gap-2">
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${badge.badgeBg}`}>
+                                        {badge.label}
+                                      </span>
+                                      {evt.className && (
+                                        <span className="text-[10px] font-semibold bg-[#F5F8FF] text-[#252B3B] px-2 py-0.5 rounded-md border border-[#E8ECF5]">
+                                          {evt.className}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className="text-[10px] font-mono text-[#6D7CB0] font-bold">
+                                      {evt.time || 'All Day'}
+                                    </span>
+                                  </div>
+
+                                  <h4 className="text-sm font-bold text-[#252B3B] tracking-tight">
+                                    {evt.title}
+                                  </h4>
+
+                                  {evt.description && (
+                                    <p className="text-xs text-[#747D91] whitespace-pre-line leading-relaxed bg-[#F5F8FF] p-2.5 rounded-lg border border-[#E8ECF5]">
+                                      {evt.description}
+                                    </p>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center justify-between pt-2 border-t border-[#E8ECF5] text-xs">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setCalendarSelectedDate(evt.date);
+                                      setCalendarViewMode('month');
+                                    }}
+                                    className="text-[11px] font-semibold text-[#4D5A8F] hover:underline cursor-pointer"
+                                  >
+                                    View in Month Grid →
+                                  </button>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenEditEvent(evt)}
+                                      className="p-1 hover:bg-[#E3EAFA] text-[#4D5A8F] rounded-lg transition-colors cursor-pointer"
+                                      title="Edit this entry"
+                                    >
+                                      <Pencil className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteEventTarget(evt)}
+                                      className="p-1 hover:bg-rose-50 text-rose-600 rounded-lg transition-colors cursor-pointer"
+                                      title="Delete this entry"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-[#F5F8FF] flex flex-col text-[#252B3B] font-sans antialiased" id="omni-class-app-container">
       {/* Omni Class Brand Accent Strip: Periwinkle SaaS Theme */}
       <div className="h-1 bg-gradient-to-r from-[#B3C0E6] via-[#8F9DCC] via-[#6D7CB0] to-[#4D5A8F] w-full" id="omni-accent-line"></div>
 
-      {/* Header Banner */}
-      <header className="bg-white/95 backdrop-blur-md border-b border-[#E8ECF5] px-6 py-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4 shadow-3xs" id="omni-header">
-        <div className="flex items-center gap-3.5">
+      {/* Header Banner: Clean Single-Row Responsive Layout */}
+      <header className="bg-white/95 backdrop-blur-md border-b border-[#E8ECF5] px-3.5 sm:px-6 py-2.5 sm:py-3.5 flex items-center justify-between gap-2.5 shadow-3xs sticky top-0 z-30" id="omni-header">
+        <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0">
           <button 
             type="button"
             onClick={() => setIsSidebarOpen(prev => !prev)}
-            className={`p-2.5 rounded-xl transition-all cursor-pointer flex items-center justify-center border shadow-3xs active:scale-95 ${
+            className={`p-2 sm:p-2.5 rounded-xl transition-all cursor-pointer flex items-center justify-center border shadow-3xs active:scale-95 shrink-0 ${
               isSidebarOpen 
                 ? 'bg-[#4D5A8F] text-white border-[#4D5A8F]' 
                 : 'bg-[#F5F8FF] hover:bg-[#E3EAFA] text-[#252B3B] border-[#E8ECF5]'
@@ -2698,28 +3772,49 @@ export default function App() {
             <Menu className="h-5 w-5" />
           </button>
           
-          <div className="p-2.5 bg-[#4D5A8F] text-white rounded-2xl shadow-3xs flex items-center justify-center">
-            <GraduationCap className="h-6 w-6 text-white" />
+          <div className="p-2 sm:p-2.5 bg-[#4D5A8F] text-white rounded-xl sm:rounded-2xl shadow-3xs flex items-center justify-center shrink-0">
+            <GraduationCap className="h-5 w-5 sm:h-6 sm:w-6 text-white" />
           </div>
 
-          <div>
-            <h1 className="text-lg md:text-xl font-extrabold text-[#252B3B] tracking-tight flex items-center gap-2">
+          <div className="min-w-0">
+            <h1 className="text-base sm:text-lg md:text-xl font-extrabold text-[#252B3B] tracking-tight truncate">
               Omni Class
             </h1>
-            <p className="text-[11px] font-medium text-[#6D7CB0] leading-none mt-1">Class Operations Hub</p>
+            <p className="text-[10px] sm:text-[11px] font-medium text-[#6D7CB0] leading-none mt-0.5 hidden xs:block truncate">Academic Portal</p>
           </div>
         </div>
         
-        <div className="flex items-center gap-2.5 flex-wrap">
+        {/* Quick Class Section Switcher on Mobile/Tablet & Sync Indicator */}
+        <div className="flex items-center gap-2 shrink-0">
+          {classes.length > 1 && (
+            <div className="relative flex items-center">
+              <label htmlFor="quick-header-class-select" className="sr-only">Choose active class</label>
+              <select
+                id="quick-header-class-select"
+                value={activeClassName}
+                onChange={(e) => setActiveClassName(e.target.value)}
+                className="text-xs font-bold bg-[#F5F8FF] text-[#252B3B] border border-[#E8ECF5] rounded-xl px-2.5 py-1.5 pr-7 focus:border-[#4D5A8F] focus:ring-2 focus:ring-[#4D5A8F]/20 outline-none cursor-pointer shadow-3xs truncate max-w-[125px] sm:max-w-[200px]"
+                title="Switch active class section"
+              >
+                {classes.map(c => (
+                  <option key={c.name} value={c.name}>{c.name}</option>
+                ))}
+              </select>
+              <ChevronDown className="h-3 w-3 text-[#747D91] pointer-events-none absolute right-2" />
+            </div>
+          )}
+
           {user ? (
-            <span className="inline-flex bg-[#E3EAFA] text-[#4D5A8F] font-mono text-[10px] uppercase font-bold items-center px-3 py-1.5 rounded-full border border-[#B3C0E6]/70 gap-1.5 shadow-3xs select-none" id="data-sync-badge">
+            <span className="inline-flex bg-[#E3EAFA] text-[#4D5A8F] font-mono text-[10px] uppercase font-bold items-center px-2 sm:px-3 py-1 sm:py-1.5 rounded-full border border-[#B3C0E6]/70 gap-1.5 shadow-3xs select-none" id="data-sync-badge" title={`Connected as ${user.email}`}>
               <span className="w-1.5 h-1.5 bg-[#4D5A8F] rounded-full animate-pulse"></span>
-              Data Sync ON
+              <span className="hidden sm:inline">Sync ON</span>
+              <span className="sm:hidden">Live</span>
             </span>
           ) : (
-            <span className="inline-flex bg-[#F5F8FF] text-[#747D91] font-mono text-[10px] uppercase font-bold items-center px-3 py-1.5 rounded-full border border-[#E8ECF5] gap-1.5 shadow-3xs select-none" id="data-sync-badge">
+            <span className="inline-flex bg-[#F5F8FF] text-[#747D91] font-mono text-[10px] uppercase font-bold items-center px-2 sm:px-3 py-1 sm:py-1.5 rounded-full border border-[#E8ECF5] gap-1.5 shadow-3xs select-none" id="data-sync-badge" title="Offline mode - changes saved locally">
               <span className="w-1.5 h-1.5 bg-[#8F9DCC] rounded-full"></span>
-              Data Sync OFF
+              <span className="hidden sm:inline">Sync OFF</span>
+              <span className="sm:hidden">Local</span>
             </span>
           )}
         </div>
@@ -2864,7 +3959,7 @@ export default function App() {
             {/* 1. Weekly Timetable */}
             <button
               type="button"
-              onClick={() => setActiveTab('timetable')}
+              onClick={() => handleSelectTab('timetable')}
               className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs transition-all cursor-pointer ${
                 activeTab === 'timetable'
                   ? 'bg-[#4D5A8F] text-white shadow-3xs font-bold'
@@ -2876,10 +3971,25 @@ export default function App() {
               <span className={activeTab === 'timetable' ? 'text-white font-bold' : 'text-[#252B3B]'}>Weekly Timetable</span>
             </button>
 
+            {/* Calendar & Agenda */}
+            <button
+              type="button"
+              onClick={() => handleSelectTab('calendar')}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs transition-all cursor-pointer ${
+                activeTab === 'calendar'
+                  ? 'bg-[#4D5A8F] text-white shadow-3xs font-bold'
+                  : 'text-[#252B3B] hover:bg-[#F5F8FF] hover:text-[#4D5A8F] font-medium'
+              }`}
+              id="sidebar-nav-calendar"
+            >
+              <CalendarDays className={`h-4 w-4 shrink-0 ${activeTab === 'calendar' ? 'text-white' : 'text-[#6D7CB0]'}`} />
+              <span className={activeTab === 'calendar' ? 'text-white font-bold' : 'text-[#252B3B]'}>Calendar &amp; Agenda</span>
+            </button>
+
             {/* 2. Student Roster */}
             <button
               type="button"
-              onClick={() => setActiveTab('students')}
+              onClick={() => handleSelectTab('students')}
               className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs transition-all cursor-pointer ${
                 activeTab === 'students'
                   ? 'bg-[#4D5A8F] text-white shadow-3xs font-bold'
@@ -2894,7 +4004,7 @@ export default function App() {
             {/* 3. Attendance Registry */}
             <button
               type="button"
-              onClick={() => setActiveTab('attendance')}
+              onClick={() => handleSelectTab('attendance')}
               className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs transition-all cursor-pointer ${
                 activeTab === 'attendance'
                   ? 'bg-[#4D5A8F] text-white shadow-3xs font-bold'
@@ -2909,7 +4019,7 @@ export default function App() {
             {/* 4. Academic Grades */}
             <button
               type="button"
-              onClick={() => setActiveTab('grades')}
+              onClick={() => handleSelectTab('grades')}
               className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs transition-all cursor-pointer ${
                 activeTab === 'grades'
                   ? 'bg-[#4D5A8F] text-white shadow-3xs font-bold'
@@ -3170,6 +4280,24 @@ export default function App() {
             <div className="flex flex-col gap-2">
               <span className="text-[9px] font-bold text-[#747D91] tracking-wider uppercase pl-0.5">Active Class:</span>
               <button
+                onClick={() => handleExportFullClass()}
+                disabled={activeClass.students.length === 0}
+                className={`w-full text-xs font-bold py-2.5 px-3.5 rounded-xl border text-left flex items-center justify-between gap-1 shadow-xs transition-all ${
+                  activeClass.students.length > 0 
+                  ? 'bg-[#4D5A8F] hover:bg-[#3D4873] border-[#4D5A8F] text-white cursor-pointer active:scale-95'
+                  : 'bg-[#4D5A8F]/40 text-white/60 border-transparent cursor-not-allowed'
+                }`}
+                id="export-full-class-sidebar"
+                title="Download full class ledger containing both attendance records and assessments/grades"
+              >
+                <span className="flex items-center gap-2 truncate">
+                  <FileSpreadsheet className="h-4 w-4 text-[#CED8F2] shrink-0" />
+                  Full Class Info (Excel)
+                </span>
+                <span className="text-[9px] bg-white/20 text-white font-mono px-1.5 py-0.5 rounded font-bold shrink-0">Both</span>
+              </button>
+
+              <button
                 onClick={handleExportGrades}
                 disabled={activeClass.students.length === 0}
                 className={`w-full text-xs font-semibold py-2 px-3.5 rounded-xl border text-left flex items-center justify-between gap-1 shadow-3xs transition-all ${
@@ -3206,6 +4334,19 @@ export default function App() {
               {/* Merged Exports System */}
               <span className="text-[9px] font-bold text-[#747D91] tracking-wider uppercase pl-0.5 mt-1">Cross-Section Consolidated:</span>
               <button
+                onClick={() => handleExportMerged('full')}
+                className="w-full text-xs font-bold py-2.5 px-3.5 rounded-xl border text-left flex items-center justify-between gap-1 shadow-xs bg-[#4D5A8F] hover:bg-[#3D4873] border-[#4D5A8F] text-white transition-all cursor-pointer active:scale-95"
+                id="export-merged-full-sidebar"
+                title="Download combined ledger for all classes containing both attendance logs and assessments/grades"
+              >
+                <span className="flex items-center gap-2 truncate">
+                  <FileSpreadsheet className="h-4 w-4 text-[#CED8F2] shrink-0" />
+                  Merged Full Info (All)
+                </span>
+                <span className="text-[9px] bg-white/20 text-white font-mono px-1.5 py-0.5 rounded font-bold shrink-0">Both</span>
+              </button>
+
+              <button
                 onClick={() => handleExportMerged('grades')}
                 className="w-full text-xs font-semibold py-2 px-3.5 rounded-xl border text-left flex items-center justify-between gap-1 shadow-3xs bg-white hover:bg-[#E3EAFA] border-[#E8ECF5] text-[#252B3B] transition-all cursor-pointer"
                 id="export-merged-grades-sidebar"
@@ -3230,41 +4371,87 @@ export default function App() {
               </button>
             </div>
           </div>
+
+          {/* Import Spreadsheet File System */}
+          <div className="bg-[#F5F8FF] p-4 rounded-2xl border border-[#E8ECF5] shadow-3xs flex flex-col gap-2.5" id="sidebar-import">
+            <h3 className="text-xs font-bold text-[#252B3B] uppercase tracking-wider flex items-center gap-1.5">
+              <Upload className="h-3.5 w-3.5 text-[#4D5A8F]" />
+              Import Spreadsheet
+            </h3>
+            <p className="text-[10px] text-[#747D91] leading-relaxed">
+              Upload any roster, single/merged attendance log, or grades workbook (.xlsx or .csv).
+            </p>
+            <label className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border-2 border-dashed border-[#8F9DCC] bg-white hover:bg-[#E3EAFA]/60 text-[#4D5A8F] font-bold text-xs cursor-pointer transition-all shadow-3xs active:scale-95 text-center">
+              <Upload className="h-4 w-4 text-[#4D5A8F]" />
+              <span>Upload Excel / CSV</span>
+              <input
+                type="file"
+                accept=".csv, .xlsx, .xls"
+                onChange={handleRosterFileUpload}
+                className="hidden"
+              />
+            </label>
+          </div>
         </aside>
 
         {/* MAIN DASHBOARD PANEL */}
-        <main className="flex-1 p-6 md:p-8 flex flex-col gap-6 overflow-x-auto bg-[#F5F8FF] text-[#252B3B]" id="streamlit-main">
-          {/* TOP CONTROLLER BAR: Standalone Weekly Timetable Button */}
-          <div className="flex items-center justify-between gap-4 flex-wrap" id="main-top-controller">
-            <button
-              type="button"
-              onClick={() => {
-                if (activeTab === 'timetable') {
-                  setActiveTab('students');
-                } else {
-                  setActiveTab('timetable');
-                }
-              }}
-              className={`inline-flex items-center gap-2.5 px-5 py-2.5 rounded-xl text-xs md:text-sm font-bold transition-all cursor-pointer shadow-3xs active:scale-95 border ${
-                activeTab === 'timetable'
-                  ? 'bg-[#4D5A8F] text-white border-[#4D5A8F] shadow-sm'
-                  : 'bg-white hover:bg-[#E3EAFA] text-[#252B3B] border-[#E8ECF5]'
-              }`}
-              id="top-weekly-timetable-btn"
-              title={activeTab === 'timetable' ? "Switch to class tables" : "Show Weekly Timetable"}
-            >
-              <Clock className={`h-4.5 w-4.5 shrink-0 ${activeTab === 'timetable' ? 'text-white' : 'text-[#4D5A8F]'}`} />
-              <span>Weekly Timetable</span>
-            </button>
+        <main className="flex-1 p-3 sm:p-5 md:p-8 flex flex-col gap-4 sm:gap-6 pb-28 lg:pb-8 overflow-x-auto bg-[#F5F8FF] text-[#252B3B]" id="streamlit-main">
+          {/* TOP CONTROLLER BAR: Standalone Weekly Timetable & Calendar & Agenda Buttons */}
+          <div className="flex items-center justify-between gap-3 flex-wrap" id="main-top-controller">
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-2.5 w-full sm:w-auto">
+              <button
+                type="button"
+                onClick={() => {
+                  if (activeTab === 'timetable') {
+                    setActiveTab('students');
+                  } else {
+                    setActiveTab('timetable');
+                  }
+                }}
+                className={`inline-flex items-center justify-center gap-2 px-3 sm:px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer shadow-3xs active:scale-95 border min-h-[44px] ${
+                  activeTab === 'timetable'
+                    ? 'bg-[#4D5A8F] text-white border-[#4D5A8F] shadow-sm'
+                    : 'bg-white hover:bg-[#E3EAFA] text-[#252B3B] border-[#E8ECF5]'
+                }`}
+                id="top-weekly-timetable-btn"
+                title={activeTab === 'timetable' ? "Switch to class tables" : "Show Weekly Timetable"}
+              >
+                <Clock className={`h-4.5 w-4.5 shrink-0 ${activeTab === 'timetable' ? 'text-white' : 'text-[#4D5A8F]'}`} />
+                <span className="truncate">Weekly Timetable</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (activeTab === 'calendar') {
+                    setActiveTab('students');
+                  } else {
+                    setActiveTab('calendar');
+                  }
+                }}
+                className={`inline-flex items-center justify-center gap-2 px-3 sm:px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer shadow-3xs active:scale-95 border min-h-[44px] ${
+                  activeTab === 'calendar'
+                    ? 'bg-[#4D5A8F] text-white border-[#4D5A8F] shadow-sm'
+                    : 'bg-white hover:bg-[#E3EAFA] text-[#252B3B] border-[#E8ECF5]'
+                }`}
+                id="top-calendar-agenda-btn"
+                title={activeTab === 'calendar' ? "Switch to class tables" : "Show Calendar & Agenda"}
+              >
+                <CalendarDays className={`h-4.5 w-4.5 shrink-0 ${activeTab === 'calendar' ? 'text-white' : 'text-[#4D5A8F]'}`} />
+                <span className="truncate">Calendar &amp; Agenda</span>
+              </button>
+            </div>
           </div>
 
           {activeTab === 'timetable' ? (
             renderTeacherWeeklyTimetable()
+          ) : activeTab === 'calendar' ? (
+            renderCalendarAgendaView()
           ) : (
-            <div className="flex flex-col gap-6" id="app-working-views">
+            <div className="flex flex-col gap-5 sm:gap-6" id="app-working-views">
               {/* CHOSEN CLASS SECTION NAME HEADER */}
-              <div className="flex items-center justify-between flex-wrap gap-3 pb-1" id="chosen-class-header">
-                <div className="flex items-center gap-2.5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-1" id="chosen-class-header">
+                <div className="flex items-center gap-2.5 min-w-0">
                   {classes.length > 0 && (
                     <button
                       type="button"
@@ -3278,7 +4465,7 @@ export default function App() {
                         setAddStudentSuccessMsg(null);
                         setEditingClassModalError(null);
                       }}
-                      className="p-1.5 text-[#4D5A8F] hover:text-[#252B3B] hover:bg-[#E3EAFA] rounded-xl transition-colors cursor-pointer shrink-0"
+                      className="p-2 text-[#4D5A8F] hover:text-[#252B3B] hover:bg-[#E3EAFA] rounded-xl transition-colors cursor-pointer shrink-0 min-h-[40px] min-w-[40px] flex items-center justify-center border border-transparent hover:border-[#CED8F2]"
                       title={`Edit name of ${activeClass.name}`}
                       id="edit-class-name-btn"
                       aria-label={`Edit name of ${activeClass.name}`}
@@ -3286,23 +4473,36 @@ export default function App() {
                       <Pencil className="h-4 w-4 text-[#4D5A8F]" />
                     </button>
                   )}
-                  <h2 className="text-2xl font-black text-[#252B3B] tracking-tight">
+                  <h2 className="text-xl sm:text-2xl font-black text-[#252B3B] tracking-tight truncate">
                     {classes.length === 0 ? "No Active Sections" : activeClass.name}
                   </h2>
                 </div>
                 {classes.length > 0 && (
-                  <div className="flex items-center gap-2.5 text-xs text-[#4D5A8F] font-mono font-bold bg-[#E3EAFA] px-3.5 py-1.5 rounded-xl border border-[#B3C0E6]/50 shadow-3xs">
-                    <span>{activeClass.students.length} students</span>
-                    <span>•</span>
-                    <span>{activeClass.assessments.length} assessments</span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => handleExportFullClass()}
+                      disabled={activeClass.students.length === 0}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 bg-[#4D5A8F] hover:bg-[#3D4873] active:scale-95 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed min-h-[38px]"
+                      title={`Download complete info (both attendance and grades) for ${activeClass.name}`}
+                      id="quick-download-full-class"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      <span>Download Full Info</span>
+                    </button>
+                    <div className="flex items-center gap-2 text-xs text-[#4D5A8F] font-mono font-bold bg-[#E3EAFA] px-3 py-1.5 rounded-xl border border-[#B3C0E6]/50 shadow-3xs min-h-[38px]">
+                      <span>{activeClass.students.length} students</span>
+                      <span>•</span>
+                      <span>{activeClass.assessments.length} assessments</span>
+                    </div>
                   </div>
                 )}
               </div>
             {/* STAGED ROSTER VERIFICATION & PREVIEW HUB */}
               {pendingImport && (
-                <div className={`rounded-xl border shadow-sm p-6 flex flex-col gap-5 animate-fade-in ${
+                <div className={`rounded-2xl border shadow-sm p-6 flex flex-col gap-5 animate-fade-in ${
                   pendingImport.short.length > 0
-                    ? 'bg-amber-50 border-amber-200'
+                    ? 'bg-amber-50/70 border-amber-200'
                     : 'bg-[#E3EAFA]/60 border-[#B3C0E6]'
                 }`} id="short-id-compliance-container">
                   
@@ -3312,122 +4512,174 @@ export default function App() {
                     ) : (
                       <Check className="h-6 w-6 text-emerald-600 shrink-0 mt-0.5" />
                     )}
-                    <div>
-                      <h3 className={`text-md font-extrabold tracking-tight ${
-                        pendingImport.short.length > 0 ? 'text-amber-900' : 'text-[#252B3B]'
-                      }`}>
-                        {pendingImport.short.length > 0 
-                          ? 'Roster Verification Required: Short Student IDs Detected' 
-                          : 'Roster Import Preview & Selection Checklist'
-                      }
-                      </h3>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className={`text-md font-extrabold tracking-tight ${
+                          pendingImport.short.length > 0 ? 'text-amber-900' : 'text-[#252B3B]'
+                        }`}>
+                          {pendingImport.isMultiSection
+                            ? `Multi-Section Import: ${pendingImport.allSections?.length || 0} Class Sections Found`
+                            : pendingImport.short.length > 0 
+                              ? 'Roster Verification Required: Short Student IDs Detected' 
+                              : `Spreadsheet Import Preview: ${pendingImport.className}`
+                          }
+                        </h3>
+                        {pendingImport.attendanceDates && pendingImport.attendanceDates.length > 0 && (
+                          <span className="text-[10px] bg-blue-100 text-blue-800 font-bold px-2 py-0.5 rounded-full border border-blue-200">
+                            📅 {pendingImport.attendanceDates.length} Attendance Dates
+                          </span>
+                        )}
+                        {pendingImport.assessments && pendingImport.assessments.length > 0 && (
+                          <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full border border-emerald-200">
+                            📊 {pendingImport.assessments.length} Assessment Columns
+                          </span>
+                        )}
+                      </div>
                       <p className={`text-xs mt-1 leading-normal ${
                         pendingImport.short.length > 0 ? 'text-amber-700' : 'text-[#747D91]'
                       }`}>
-                        {pendingImport.short.length > 0 
-                          ? 'We detected student records with short ID numbers (6 or less digits). Decide which candidates you wish to discard or whitelist in your class directory below:'
-                          : 'Review the list of students initialized from the uploading template. Choose what to keep and what to discard before committing:'
+                        {pendingImport.isMultiSection
+                          ? 'This workbook contains multiple class sections. Review the breakdown below and click import to update all sections simultaneously:'
+                          : pendingImport.short.length > 0 
+                            ? 'We detected student records with short ID numbers (6 or less digits). Decide which candidates you wish to discard or keep in your class directory below:'
+                            : 'Review the student records and metadata parsed from your spreadsheet. Confirm what to keep before saving to the database:'
                         }
                       </p>
                     </div>
                   </div>
 
-                  {/* Consolidated Checklist Preview Scrollbar Box */}
-                  <div className="bg-white border border-[#E8ECF5] rounded-xl max-h-72 overflow-y-auto divide-y divide-[#E8ECF5] shadow-3xs text-left">
-                    
-                    {/* PRIORITY SECTION: Short Student IDs */}
-                    {pendingImport.short.length > 0 && (
-                      <div>
-                        <div className="bg-amber-100/65 text-amber-950 font-bold px-3.5 py-2 text-[10px] uppercase tracking-wide flex items-center justify-between sticky top-0 z-10 border-b border-amber-200/55 backdrop-blur-xs">
-                          <span className="flex items-center gap-1">
-                            ⚠️ Priority Review: Short IDs ({pendingImport.short.length})
-                          </span>
-                          <span className="text-[9px] bg-amber-200 text-amber-900 font-bold px-1.5 py-0.5 rounded-md">
-                            Discard Recommendation
-                          </span>
+                  {/* Multi-Section Breakdown Cards */}
+                  {pendingImport.isMultiSection && pendingImport.allSections && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {pendingImport.allSections.map(sec => (
+                        <div key={sec.className} className="bg-white rounded-xl border border-[#E8ECF5] p-3.5 flex flex-col gap-2 shadow-3xs">
+                          <div className="flex items-center justify-between border-b border-[#E8ECF5] pb-2">
+                            <span className="font-bold text-xs text-[#252B3B] truncate">{sec.className}</span>
+                            <span className="text-[10px] bg-[#E3EAFA] text-[#4D5A8F] font-bold px-2 py-0.5 rounded-md">
+                              {sec.students.length} students
+                            </span>
+                          </div>
+                          <div className="flex flex-col gap-1 text-[11px] text-[#747D91]">
+                            {sec.attendanceDates.length > 0 && (
+                              <span className="flex items-center gap-1 text-blue-700">
+                                📅 {sec.attendanceDates.length} attendance dates
+                              </span>
+                            )}
+                            {sec.assessments.length > 0 && (
+                              <span className="flex items-center gap-1 text-emerald-700">
+                                📊 {sec.assessments.length} assessments: {sec.assessments.map(a => a.name).join(', ')}
+                              </span>
+                            )}
+                            <div className="text-[10px] text-[#747D91] truncate mt-1">
+                              e.g. {sec.students.slice(0, 2).map(s => s.fullName).join(', ')}
+                              {sec.students.length > 2 ? '...' : ''}
+                            </div>
+                          </div>
                         </div>
-                        <div className="divide-y divide-slate-100 bg-amber-50/15">
-                          {pendingImport.short.map(st => {
-                            const isChecked = selectedShortIds.includes(st.id);
-                            return (
-                              <div key={st.id} className="flex items-center justify-between p-3.5 text-xs hover:bg-amber-50/70 transition-colors">
-                                <div className="flex items-center gap-3">
-                                  <input 
-                                    type="checkbox" 
-                                    checked={isChecked}
-                                    id={`chk-import-${st.id}`}
-                                    onChange={() => {
-                                      if (isChecked) {
-                                        setSelectedShortIds(prev => prev.filter(x => x !== st.id));
-                                      } else {
-                                        setSelectedShortIds(prev => [...prev, st.id]);
-                                      }
-                                    }}
-                                    className="h-4.5 w-4.5 text-amber-600 focus:ring-amber-500 rounded border-slate-300 cursor-pointer"
-                                  />
-                                  <label htmlFor={`chk-import-${st.id}`} className="flex flex-col sm:flex-row sm:items-center gap-1.5 cursor-pointer select-none">
-                                    <span className="font-mono bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded font-black text-[10.5px]">ID: {st.id}</span>
-                                    <span className="font-bold text-slate-900">{st.fullName}</span>
-                                  </label>
-                                </div>
-                                <span className="text-[10px] text-amber-600 font-mono font-bold">⚠️ {st.id.length} digits</span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
+                      ))}
+                    </div>
+                  )}
 
-                    {/* GENERAL SECTION: Normal Student Records */}
-                    {pendingImport.normal.length > 0 && (
-                      <div>
-                        <div className="bg-[#E3EAFA] text-[#252B3B] font-bold px-3.5 py-2 text-[10px] uppercase tracking-wide flex items-center justify-between sticky top-0 z-10 border-b border-[#E8ECF5] backdrop-blur-xs">
-                          <span>✅ General Roster List ({pendingImport.normal.length})</span>
-                          <span className="text-[9px] bg-white text-[#4D5A8F] font-bold px-1.5 py-0.5 rounded-md border border-[#E8ECF5]">
-                            Normal ID Formats
-                          </span>
-                        </div>
-                        <div className="divide-y divide-[#E8ECF5]">
-                          {pendingImport.normal.map(st => {
-                            const isChecked = selectedShortIds.includes(st.id);
-                            return (
-                              <div key={st.id} className="flex items-center justify-between p-3.5 text-xs hover:bg-[#F5F8FF] transition-colors">
-                                <div className="flex items-center gap-3">
-                                  <input 
-                                    type="checkbox" 
-                                    checked={isChecked}
-                                    id={`chk-import-${st.id}`}
-                                    onChange={() => {
-                                      if (isChecked) {
-                                        setSelectedShortIds(prev => prev.filter(x => x !== st.id));
-                                      } else {
-                                        setSelectedShortIds(prev => [...prev, st.id]);
-                                      }
-                                    }}
-                                    className="h-4.5 w-4.5 text-[#4D5A8F] focus:ring-[#4D5A8F] rounded border-[#E8ECF5] cursor-pointer"
-                                  />
-                                  <label htmlFor={`chk-import-${st.id}`} className="flex flex-col sm:flex-row sm:items-center gap-1.5 cursor-pointer select-none">
-                                    <span className="font-mono bg-[#E3EAFA] text-[#4D5A8F] px-1.5 py-0.5 rounded font-bold text-[10.5px]">ID: {st.id}</span>
-                                    <span className="font-bold text-[#252B3B]">{st.fullName}</span>
-                                  </label>
+                  {/* Single Section Student Checklist */}
+                  {!pendingImport.isMultiSection && (
+                    <div className="bg-white border border-[#E8ECF5] rounded-xl max-h-72 overflow-y-auto divide-y divide-[#E8ECF5] shadow-3xs text-left">
+                      
+                      {/* PRIORITY SECTION: Short Student IDs */}
+                      {pendingImport.short.length > 0 && (
+                        <div>
+                          <div className="bg-amber-100/65 text-amber-950 font-bold px-3.5 py-2 text-[10px] uppercase tracking-wide flex items-center justify-between sticky top-0 z-10 border-b border-amber-200/55 backdrop-blur-xs">
+                            <span className="flex items-center gap-1">
+                              ⚠️ Priority Review: Short IDs ({pendingImport.short.length})
+                            </span>
+                            <span className="text-[9px] bg-amber-200 text-amber-900 font-bold px-1.5 py-0.5 rounded-md">
+                              Review Recommended
+                            </span>
+                          </div>
+                          <div className="divide-y divide-slate-100 bg-amber-50/15">
+                            {pendingImport.short.map(st => {
+                              const isChecked = selectedShortIds.includes(st.id);
+                              return (
+                                <div key={st.id} className="flex items-center justify-between p-3.5 text-xs hover:bg-amber-50/70 transition-colors">
+                                  <div className="flex items-center gap-3">
+                                    <input 
+                                      type="checkbox" 
+                                      checked={isChecked}
+                                      id={`chk-import-${st.id}`}
+                                      onChange={() => {
+                                        if (isChecked) {
+                                          setSelectedShortIds(prev => prev.filter(x => x !== st.id));
+                                        } else {
+                                          setSelectedShortIds(prev => [...prev, st.id]);
+                                        }
+                                      }}
+                                      className="h-4.5 w-4.5 text-amber-600 focus:ring-amber-500 rounded border-slate-300 cursor-pointer"
+                                    />
+                                    <label htmlFor={`chk-import-${st.id}`} className="flex flex-col sm:flex-row sm:items-center gap-1.5 cursor-pointer select-none">
+                                      <span className="font-mono bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded font-black text-[10.5px]">ID: {st.id}</span>
+                                      <span className="font-bold text-slate-900">{st.fullName}</span>
+                                    </label>
+                                  </div>
+                                  <span className="text-[10px] text-amber-600 font-mono font-bold">⚠️ {st.id.length} digits</span>
                                 </div>
-                                <span className="text-[10px] text-[#747D91] font-mono">({st.id.length} digits)</span>
-                              </div>
-                            );
-                          })}
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      )}
 
-                  </div>
+                      {/* GENERAL SECTION: Normal Student Records */}
+                      {pendingImport.normal.length > 0 && (
+                        <div>
+                          <div className="bg-[#E3EAFA] text-[#252B3B] font-bold px-3.5 py-2 text-[10px] uppercase tracking-wide flex items-center justify-between sticky top-0 z-10 border-b border-[#E8ECF5] backdrop-blur-xs">
+                            <span>✅ General Roster List ({pendingImport.normal.length})</span>
+                            <span className="text-[9px] bg-white text-[#4D5A8F] font-bold px-1.5 py-0.5 rounded-md border border-[#E8ECF5]">
+                              Normal ID Formats
+                            </span>
+                          </div>
+                          <div className="divide-y divide-[#E8ECF5]">
+                            {pendingImport.normal.map(st => {
+                              const isChecked = selectedShortIds.includes(st.id);
+                              return (
+                                <div key={st.id} className="flex items-center justify-between p-3.5 text-xs hover:bg-[#F5F8FF] transition-colors">
+                                  <div className="flex items-center gap-3">
+                                    <input 
+                                      type="checkbox" 
+                                      checked={isChecked}
+                                      id={`chk-import-${st.id}`}
+                                      onChange={() => {
+                                        if (isChecked) {
+                                          setSelectedShortIds(prev => prev.filter(x => x !== st.id));
+                                        } else {
+                                          setSelectedShortIds(prev => [...prev, st.id]);
+                                        }
+                                      }}
+                                      className="h-4.5 w-4.5 text-[#4D5A8F] focus:ring-[#4D5A8F] rounded border-[#E8ECF5] cursor-pointer"
+                                    />
+                                    <label htmlFor={`chk-import-${st.id}`} className="flex flex-col sm:flex-row sm:items-center gap-1.5 cursor-pointer select-none">
+                                      <span className="font-mono bg-[#E3EAFA] text-[#4D5A8F] px-1.5 py-0.5 rounded font-bold text-[10.5px]">ID: {st.id}</span>
+                                      <span className="font-bold text-[#252B3B]">{st.fullName}</span>
+                                    </label>
+                                  </div>
+                                  <span className="text-[10px] text-[#747D91] font-mono">({st.id.length} digits)</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                    </div>
+                  )}
 
                   {/* Summary of checked items */}
-                  <div className="text-[11px] font-bold text-[#747D91] flex items-center gap-1 px-1">
-                    <span>Selected to Keep:</span>
-                    <span className="text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-100">
-                      {selectedShortIds.length} of {pendingImport.short.length + pendingImport.normal.length} Students Active
-                    </span>
-                  </div>
+                  {!pendingImport.isMultiSection && (
+                    <div className="text-[11px] font-bold text-[#747D91] flex items-center gap-1 px-1">
+                      <span>Selected to Keep:</span>
+                      <span className="text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-100">
+                        {selectedShortIds.length} of {pendingImport.short.length + pendingImport.normal.length} Students Active
+                      </span>
+                    </div>
+                  )}
 
                   {/* Interactive Buttons Bar */}
                   <div className="flex items-center gap-2.5 flex-wrap border-t border-[#E8ECF5] pt-3">
@@ -3435,10 +4687,15 @@ export default function App() {
                       onClick={handleConfirmPendingImport}
                       className="bg-[#4D5A8F] hover:bg-[#3D4873] text-white font-bold text-xs px-4.5 py-2.5 rounded-xl shadow-xs transition-all cursor-pointer active:scale-95 inline-flex items-center gap-1"
                     >
-                      <span>Save & Complete Import ({selectedShortIds.length})</span>
+                      <span>
+                        {pendingImport.isMultiSection 
+                          ? `Import All Sections (${pendingImport.allSections?.length || 0})` 
+                          : `Save & Complete Import (${selectedShortIds.length})`
+                        }
+                      </span>
                     </button>
                     
-                    {pendingImport.short.length > 0 && (
+                    {!pendingImport.isMultiSection && pendingImport.short.length > 0 && (
                       <button
                         onClick={handleDeselectShortIDsChecklist}
                         className="bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-250 text-xs font-bold px-4.5 py-2.5 rounded-xl transition-all cursor-pointer"
@@ -3448,12 +4705,14 @@ export default function App() {
                       </button>
                     )}
 
-                    <button
-                      onClick={handleSelectAllChecklist}
-                      className="bg-white hover:bg-[#E3EAFA] border border-[#E8ECF5] text-[#252B3B] text-xs font-bold px-4 py-2.5 rounded-xl transition-all cursor-pointer"
-                    >
-                      Select All ({pendingImport.short.length + pendingImport.normal.length})
-                    </button>
+                    {!pendingImport.isMultiSection && (
+                      <button
+                        onClick={handleSelectAllChecklist}
+                        className="bg-white hover:bg-[#E3EAFA] border border-[#E8ECF5] text-[#252B3B] text-xs font-bold px-4 py-2.5 rounded-xl transition-all cursor-pointer"
+                      >
+                        Select All ({pendingImport.short.length + pendingImport.normal.length})
+                      </button>
+                    )}
 
                     <button
                       onClick={() => setPendingImport(null)}
@@ -3466,10 +4725,10 @@ export default function App() {
               )}
 
               {/* MATERIAL DESIGN SEGMENTED TIMELINE TABS */}
-              <div className="flex bg-[#E3EAFA] p-1.5 rounded-2xl border border-[#E8ECF5] shrink-0 gap-1.5 overflow-x-auto max-w-full md:w-fit shadow-3xs" id="tabs-ribbon">
+              <div className="flex bg-[#E3EAFA] p-1 sm:p-1.5 rounded-2xl border border-[#E8ECF5] shrink-0 gap-1 sm:gap-1.5 overflow-x-auto max-w-full md:w-fit shadow-3xs" id="tabs-ribbon">
                 <button
                   onClick={() => setActiveTab('students')}
-                  className={`flex items-center justify-center gap-2 px-5 py-2.5 text-xs md:text-sm font-bold rounded-xl transition-all duration-200 select-none cursor-pointer whitespace-nowrap ${
+                  className={`flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-5 py-2 sm:py-2.5 text-xs sm:text-sm font-bold rounded-xl transition-all duration-200 select-none cursor-pointer whitespace-nowrap min-h-[42px] ${
                     activeTab === 'students'
                     ? 'bg-[#4D5A8F] text-white shadow-xs'
                     : 'bg-transparent text-[#252B3B] hover:bg-white/80 hover:text-[#252B3B]'
@@ -3482,7 +4741,7 @@ export default function App() {
 
                 <button
                   onClick={() => setActiveTab('attendance')}
-                  className={`flex items-center justify-center gap-2 px-5 py-2.5 text-xs md:text-sm font-bold rounded-xl transition-all duration-200 select-none cursor-pointer whitespace-nowrap ${
+                  className={`flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-5 py-2 sm:py-2.5 text-xs sm:text-sm font-bold rounded-xl transition-all duration-200 select-none cursor-pointer whitespace-nowrap min-h-[42px] ${
                     activeTab === 'attendance'
                     ? 'bg-[#4D5A8F] text-white shadow-xs'
                     : 'bg-transparent text-[#252B3B] hover:bg-white/80 hover:text-[#252B3B]'
@@ -3495,7 +4754,7 @@ export default function App() {
 
                 <button
                   onClick={() => setActiveTab('grades')}
-                  className={`flex items-center justify-center gap-2 px-5 py-2.5 text-xs md:text-sm font-bold rounded-xl transition-all duration-200 select-none cursor-pointer whitespace-nowrap ${
+                  className={`flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-5 py-2 sm:py-2.5 text-xs sm:text-sm font-bold rounded-xl transition-all duration-200 select-none cursor-pointer whitespace-nowrap min-h-[42px] ${
                     activeTab === 'grades'
                     ? 'bg-[#4D5A8F] text-white shadow-xs'
                     : 'bg-transparent text-[#252B3B] hover:bg-white/80 hover:text-[#252B3B]'
@@ -3508,18 +4767,30 @@ export default function App() {
               </div>
 
               {/* ACTIVE WORKING VIEWPORTS */}
-              <div className="bg-white rounded-2xl border border-[#E8ECF5] p-6 shadow-xs" id="tab-viewport">
+              <div className="bg-white rounded-2xl border border-[#E8ECF5] p-3.5 sm:p-6 shadow-xs" id="tab-viewport">
                 
                 {/* STUDENTS VIEWPORT */}
                 {activeTab === 'students' && (
                   <div className="flex flex-col gap-4">
-                    <div className="flex justify-between items-center pb-2 border-b border-[#E8ECF5]">
+                    <div className="flex justify-between items-center pb-2 border-b border-[#E8ECF5] flex-wrap gap-2">
                       <h3 className="font-extrabold text-[#252B3B] text-md tracking-tight">
                         {classes.length === 0 ? "Class Roster: No Active Sections" : `Class Roster Listing: ${activeClass.name}`}
                       </h3>
-                      <span className="text-xs bg-[#E3EAFA] px-2.5 py-1 text-[#4D5A8F] font-bold rounded-lg border border-[#B3C0E6]/50">
-                        Total Count: {classes.length === 0 ? 0 : activeClass.students.length} students
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <label className="inline-flex items-center gap-1.5 px-3 py-1 bg-white hover:bg-[#E3EAFA] text-[#4D5A8F] border border-[#E8ECF5] hover:border-[#8F9DCC] rounded-lg text-xs font-bold transition-all shadow-3xs cursor-pointer active:scale-95" title="Import students or entire workbook">
+                          <Upload className="h-3.5 w-3.5 text-[#4D5A8F]" />
+                          <span>Import Spreadsheet</span>
+                          <input
+                            type="file"
+                            accept=".csv, .xlsx, .xls"
+                            onChange={handleRosterFileUpload}
+                            className="hidden"
+                          />
+                        </label>
+                        <span className="text-xs bg-[#E3EAFA] px-2.5 py-1 text-[#4D5A8F] font-bold rounded-lg border border-[#B3C0E6]/50">
+                          Total: {classes.length === 0 ? 0 : activeClass.students.length} students
+                        </span>
+                      </div>
                     </div>
 
                     {classes.length === 0 ? (
@@ -3557,22 +4828,22 @@ export default function App() {
                         <table className="w-full text-left border-collapse" id="students-table-matrix">
                           <thead>
                             <tr className="bg-[#E3EAFA] text-[#252B3B] text-[10px] uppercase font-bold tracking-widest border-b border-[#E8ECF5]">
-                              <th className="pl-4 pr-1.5 py-3 w-28 whitespace-nowrap">ID Number</th>
-                              <th className="pl-1.5 pr-4 py-3 w-44 whitespace-nowrap">Student Name</th>
-                              <th className="px-4 py-3">Academic Sneak Peek (Semester Progress)</th>
+                              <th className="sticky left-0 z-20 bg-[#E3EAFA] pl-3.5 sm:pl-4 pr-1.5 py-3 w-24 sm:w-28 whitespace-nowrap shadow-[1px_0_0_0_#E8ECF5]">ID Number</th>
+                              <th className="sticky left-24 sm:left-28 z-20 bg-[#E3EAFA] pl-1.5 pr-3 sm:pr-4 py-3 w-36 sm:w-44 whitespace-nowrap shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]">Student Name</th>
+                              <th className="px-4 py-3 whitespace-nowrap">Academic Sneak Peek (Semester Progress)</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-[#E8ECF5] text-xs">
                             {activeClass.students.map(s => {
                               const colorInfo = getStudentHighlightClasses(s.color);
-                              const rowBgClass = colorInfo.bg || '';
+                              const rowBgClass = colorInfo.bg || 'bg-white';
                               const totalDates = getAttendanceDates(activeClass);
                               const attendedCount = totalDates.filter(d => activeClass.attendance[s.id]?.[d] === 'Attended').length;
                               const finalGrade = calculateFinalGrade(s.id, activeClass);
 
                               return (
                                 <tr key={s.id} className={`${rowBgClass} ${colorInfo.hover || 'hover:bg-[#F5F8FF]'} transition-all`}>
-                                  <td className={`pl-4 pr-1.5 py-3 whitespace-nowrap font-medium ${rowBgClass} ${colorInfo.border || ''}`}>
+                                  <td className={`sticky left-0 z-10 ${rowBgClass} pl-3.5 sm:pl-4 pr-1.5 py-3 whitespace-nowrap font-medium ${colorInfo.border || ''} shadow-[1px_0_0_0_#E8ECF5]`}>
                                     <div className="flex items-center gap-1.5">
                                       <StudentGearBox
                                         student={s}
@@ -3601,7 +4872,7 @@ export default function App() {
                                       </span>
                                     </div>
                                   </td>
-                                  <td className={`pl-1.5 pr-4 py-3 font-bold text-[#252B3B] whitespace-nowrap ${rowBgClass}`}>
+                                  <td className={`sticky left-24 sm:left-28 z-10 ${rowBgClass} pl-1.5 pr-3 sm:pr-4 py-3 font-bold text-[#252B3B] whitespace-nowrap shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]`}>
                                     <span>{s.fullName}</span>
                                   </td>
                                   <td className={`px-4 py-3 ${rowBgClass}`}>
@@ -3681,7 +4952,7 @@ export default function App() {
                           onChange={setAttendanceDate}
                         />
                       </div>
-                      <div className="md:col-span-2 pt-4 md:pt-0">
+                      <div className="md:col-span-2 pt-4 md:pt-0 flex items-center gap-2 flex-wrap">
                         <button
                           onClick={handleAddAttendanceColumn}
                           className="bg-[#4D5A8F] hover:bg-[#3D4873] text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-xs transition-all cursor-pointer shrink-0"
@@ -3689,6 +4960,16 @@ export default function App() {
                         >
                           Take Attendance (Add Column)
                         </button>
+                        <label className="inline-flex items-center gap-1.5 px-3.5 py-2.5 bg-white hover:bg-[#E3EAFA] text-[#4D5A8F] border border-[#E8ECF5] hover:border-[#8F9DCC] rounded-xl text-xs font-bold transition-all shadow-3xs cursor-pointer active:scale-95 shrink-0" title="Import attendance log file for this class or all classes">
+                          <Upload className="h-3.5 w-3.5 text-[#4D5A8F]" />
+                          <span>Import Attendance Log</span>
+                          <input
+                            type="file"
+                            accept=".csv, .xlsx, .xls"
+                            onChange={handleRosterFileUpload}
+                            className="hidden"
+                          />
+                        </label>
                       </div>
                     </div>
 
@@ -3720,10 +5001,10 @@ export default function App() {
                         <table className="w-full text-left border-collapse" id="attendance-table-matrix">
                           <thead>
                             <tr className="bg-[#E3EAFA] text-[#252B3B] text-[10px] uppercase font-bold tracking-widest border-b border-[#E8ECF5]">
-                              <th className="pl-4 pr-1.5 py-3.5 whitespace-nowrap w-28">ID Number</th>
-                              <th className="pl-1.5 pr-4 py-3.5 whitespace-nowrap w-44">Full Name</th>
+                              <th className="sticky left-0 z-20 bg-[#E3EAFA] pl-3.5 sm:pl-4 pr-1.5 py-3.5 whitespace-nowrap w-24 sm:w-28 shadow-[1px_0_0_0_#E8ECF5]">ID Number</th>
+                              <th className="sticky left-24 sm:left-28 z-20 bg-[#E3EAFA] pl-1.5 pr-3 sm:pr-4 py-3.5 whitespace-nowrap w-36 sm:w-44 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]">Full Name</th>
                               {getAttendanceDates(activeClass).map(d => (
-                                <th key={d} className="px-4 py-3.5 whitespace-nowrap text-center">
+                                <th key={d} className="px-3 sm:px-4 py-3.5 whitespace-nowrap text-center">
                                   <div className="inline-flex items-center gap-1.5 justify-center">
                                     <span className="font-mono text-xs font-bold text-[#252B3B]">
                                       {formatDisplayDate(d)}
@@ -3744,11 +5025,11 @@ export default function App() {
                           <tbody className="divide-y divide-[#E8ECF5] text-xs">
                             {activeClass.students.map(s => {
                               const colorInfo = getStudentHighlightClasses(s.color);
-                              const rowBgClass = colorInfo.bg || '';
+                              const rowBgClass = colorInfo.bg || 'bg-white';
                               return (
                                 <tr key={s.id} className={`${rowBgClass} ${colorInfo.hover || 'hover:bg-[#F5F8FF]'} transition-all`}>
-                                  <td className={`pl-4 pr-1.5 py-3.5 text-[#747D91] font-mono font-medium ${rowBgClass} ${colorInfo.border || ''}`}>{s.id}</td>
-                                  <td className={`pl-1.5 pr-4 py-3.5 font-bold text-[#252B3B] whitespace-nowrap ${rowBgClass}`}>{s.fullName}</td>
+                                  <td className={`sticky left-0 z-10 ${rowBgClass} pl-3.5 sm:pl-4 pr-1.5 py-3.5 text-[#747D91] font-mono font-medium ${colorInfo.border || ''} shadow-[1px_0_0_0_#E8ECF5]`}>{s.id}</td>
+                                  <td className={`sticky left-24 sm:left-28 z-10 ${rowBgClass} pl-1.5 pr-3 sm:pr-4 py-3.5 font-bold text-[#252B3B] whitespace-nowrap shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]`}>{s.fullName}</td>
                                   {getAttendanceDates(activeClass).map(d => {
                                     const status = activeClass.attendance[s.id]?.[d] || 'Not Taken';
                                     
@@ -3757,10 +5038,10 @@ export default function App() {
                                     else if (status === 'Absent') pillClass = 'bg-rose-50 text-rose-700 border-rose-200';
 
                                     return (
-                                      <td key={d} className={`px-4 py-3.5 text-center whitespace-nowrap ${rowBgClass}`}>
+                                      <td key={d} className={`px-3 sm:px-4 py-3 text-center whitespace-nowrap ${rowBgClass}`}>
                                         <button
                                           onClick={() => handleToggleAttendanceCell(s.id, d, status)}
-                                          className={`inline-flex items-center px-3 py-1 rounded-full text-[10.5px] font-bold border transition-colors cursor-pointer ${pillClass}`}
+                                          className={`inline-flex items-center justify-center min-w-[76px] min-h-[32px] px-3 py-1 rounded-full text-[11px] font-bold border transition-all cursor-pointer active:scale-95 ${pillClass}`}
                                         >
                                           {status}
                                         </button>
@@ -3799,6 +5080,16 @@ export default function App() {
                           <Plus className="h-4 w-4" />
                           <span>Add Assessment</span>
                         </button>
+                        <label className="inline-flex items-center gap-1.5 px-3.5 py-2.5 bg-white hover:bg-[#E3EAFA] text-[#4D5A8F] border border-[#E8ECF5] hover:border-[#8F9DCC] rounded-xl text-xs font-bold transition-all shadow-3xs cursor-pointer active:scale-95" title="Import grades report file for this class or all classes">
+                          <Upload className="h-3.5 w-3.5 text-[#4D5A8F]" />
+                          <span>Import Grades Sheet</span>
+                          <input
+                            type="file"
+                            accept=".csv, .xlsx, .xls"
+                            onChange={handleRosterFileUpload}
+                            className="hidden"
+                          />
+                        </label>
                         <span className="text-xs text-[#747D91] hidden sm:inline font-medium">
                           Click to specify assessment name, full mark, and weight.
                         </span>
@@ -3860,8 +5151,8 @@ export default function App() {
                         <table className="w-full text-left border-collapse" id="grades-table-matrix">
                           <thead>
                             <tr className="bg-[#E3EAFA] text-[#252B3B] text-[10px] uppercase font-bold tracking-widest border-b border-[#E8ECF5]">
-                              <th className="pl-4 pr-1.5 py-3.5 whitespace-nowrap w-28">ID Number</th>
-                              <th className="pl-1.5 pr-4 py-3.5 whitespace-nowrap w-44">Full Name</th>
+                              <th className="sticky left-0 z-20 bg-[#E3EAFA] pl-3.5 sm:pl-4 pr-1.5 py-3.5 whitespace-nowrap w-24 sm:w-28 shadow-[1px_0_0_0_#E8ECF5]">ID Number</th>
+                              <th className="sticky left-24 sm:left-28 z-20 bg-[#E3EAFA] pl-1.5 pr-3 sm:pr-4 py-3.5 whitespace-nowrap w-36 sm:w-44 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]">Full Name</th>
                               {activeClass.assessments.map(a => (
                                 <th 
                                   key={a.name} 
@@ -3902,12 +5193,12 @@ export default function App() {
                           <tbody className="divide-y divide-[#E8ECF5] text-xs">
                             {activeClass.students.map(s => {
                               const colorInfo = getStudentHighlightClasses(s.color);
-                              const rowBgClass = colorInfo.bg || '';
+                              const rowBgClass = colorInfo.bg || 'bg-white';
                               const finalGradeCellClass = s.color && s.color !== 'none' ? rowBgClass : 'bg-[#E3EAFA]/30';
                               return (
                                 <tr key={s.id} className={`${rowBgClass} ${colorInfo.hover || 'hover:bg-[#F5F8FF]'} transition-all`}>
-                                  <td className={`pl-4 pr-1.5 py-3.5 text-[#747D91] font-mono font-medium ${rowBgClass} ${colorInfo.border || ''}`}>{s.id}</td>
-                                  <td className={`pl-1.5 pr-4 py-3.5 font-bold text-[#252B3B] whitespace-nowrap ${rowBgClass}`}>{s.fullName}</td>
+                                  <td className={`sticky left-0 z-10 ${rowBgClass} pl-3.5 sm:pl-4 pr-1.5 py-3.5 text-[#747D91] font-mono font-medium ${colorInfo.border || ''} shadow-[1px_0_0_0_#E8ECF5]`}>{s.id}</td>
+                                  <td className={`sticky left-24 sm:left-28 z-10 ${rowBgClass} pl-1.5 pr-3 sm:pr-4 py-3.5 font-bold text-[#252B3B] whitespace-nowrap shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]`}>{s.fullName}</td>
                                   {activeClass.assessments.map(a => {
                                     const score = activeClass.grades[s.id]?.[a.name];
                                     const maxMark = a.maxMark || 100;
@@ -4284,7 +5575,7 @@ export default function App() {
               </div>
 
               {/* Action buttons */}
-              <div className="flex items-center gap-2.5 justify-end mt-4 border-t border-[#E8ECF5] pt-4" id="modal-actions">
+              <div className="flex flex-col-reverse sm:flex-row items-center gap-2 sm:gap-2.5 justify-end mt-4 border-t border-[#E8ECF5] pt-4" id="modal-actions">
                 <button
                   type="button"
                   onClick={() => {
@@ -4295,13 +5586,13 @@ export default function App() {
                     setCreatedClassFileSuccess(null);
                     setNewClassDays([]);
                   }}
-                  className="bg-[#F5F8FF] hover:bg-[#E3EAFA] text-[#252B3B] border border-[#E8ECF5] text-xs font-bold px-4.5 py-2.5 rounded-xl transition-all cursor-pointer"
+                  className="w-full sm:w-auto text-center justify-center bg-[#F5F8FF] hover:bg-[#E3EAFA] text-[#252B3B] border border-[#E8ECF5] text-xs font-bold px-4.5 py-2.5 rounded-xl transition-all cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="bg-[#4D5A8F] hover:bg-[#3D4873] active:scale-[0.98] text-white text-xs font-bold px-5 py-2.5 rounded-xl transition-all cursor-pointer shadow-xs inline-flex items-center gap-1.5"
+                  className="w-full sm:w-auto text-center justify-center bg-[#4D5A8F] hover:bg-[#3D4873] active:scale-[0.98] text-white text-xs font-bold px-5 py-2.5 rounded-xl transition-all cursor-pointer shadow-xs inline-flex items-center gap-1.5"
                 >
                   <Plus className="h-4 w-4" />
                   Create Class
@@ -4720,17 +6011,17 @@ export default function App() {
                 )}
 
                 {/* Modal Footer Actions */}
-                <div className="flex items-center gap-2.5 justify-end mt-2 border-t border-[#E8ECF5] pt-4">
+                <div className="flex flex-col-reverse sm:flex-row items-center gap-2 sm:gap-2.5 justify-end mt-2 border-t border-[#E8ECF5] pt-4">
                   <button
                     type="button"
                     onClick={() => setEditingClassTarget(null)}
-                    className="bg-[#F5F8FF] hover:bg-[#E3EAFA] text-[#252B3B] border border-[#E8ECF5] text-xs font-bold px-4.5 py-2.5 rounded-xl transition-all cursor-pointer"
+                    className="w-full sm:w-auto text-center justify-center bg-[#F5F8FF] hover:bg-[#E3EAFA] text-[#252B3B] border border-[#E8ECF5] text-xs font-bold px-4.5 py-2.5 rounded-xl transition-all cursor-pointer"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="bg-[#4D5A8F] hover:bg-[#3D4873] active:scale-[0.98] text-white text-xs font-bold px-5 py-2.5 rounded-xl transition-all cursor-pointer shadow-xs inline-flex items-center gap-1.5"
+                    className="w-full sm:w-auto text-center justify-center bg-[#4D5A8F] hover:bg-[#3D4873] active:scale-[0.98] text-white text-xs font-bold px-5 py-2.5 rounded-xl transition-all cursor-pointer shadow-xs inline-flex items-center gap-1.5"
                   >
                     <Check className="h-4 w-4" />
                     Save Changes
@@ -4824,20 +6115,20 @@ export default function App() {
               )}
 
               {/* Footer buttons */}
-              <div className="flex items-center gap-2.5 justify-end mt-2 pt-3 border-t border-[#E8ECF5]">
+              <div className="flex flex-col-reverse sm:flex-row items-center gap-2 sm:gap-2.5 justify-end mt-2 pt-3 border-t border-[#E8ECF5]">
                 <button
                   type="button"
                   onClick={() => {
                     setIsAddStudentModalOpen(false);
                     setAddStudentModalError(null);
                   }}
-                  className="bg-[#F5F8FF] hover:bg-[#E3EAFA] text-[#252B3B] border border-[#E8ECF5] text-xs font-bold px-4 py-2 rounded-xl transition-all cursor-pointer"
+                  className="w-full sm:w-auto text-center justify-center bg-[#F5F8FF] hover:bg-[#E3EAFA] text-[#252B3B] border border-[#E8ECF5] text-xs font-bold px-4 py-2.5 rounded-xl transition-all cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="bg-[#4D5A8F] hover:bg-[#3D4873] active:scale-[0.98] text-white text-xs font-bold px-4.5 py-2 rounded-xl transition-all cursor-pointer shadow-xs inline-flex items-center gap-1.5"
+                  className="w-full sm:w-auto text-center justify-center bg-[#4D5A8F] hover:bg-[#3D4873] active:scale-[0.98] text-white text-xs font-bold px-4.5 py-2.5 rounded-xl transition-all cursor-pointer shadow-xs inline-flex items-center gap-1.5"
                 >
                   <Plus className="h-4 w-4" />
                   <span>Add Student</span>
@@ -5035,18 +6326,18 @@ export default function App() {
               </div>
 
               {/* Actions */}
-              <div className="flex items-center gap-2.5 justify-end mt-2 border-t border-[#E8ECF5] pt-4">
+              <div className="flex flex-col-reverse sm:flex-row items-center gap-2 sm:gap-2.5 justify-end mt-2 border-t border-[#E8ECF5] pt-4">
                 <button
                   type="button"
                   onClick={() => setIsAddScheduleModalOpen(false)}
-                  className="bg-[#F5F8FF] hover:bg-[#E3EAFA] text-[#252B3B] border border-[#E8ECF5] text-xs font-bold px-4.5 py-2.5 rounded-xl transition-all cursor-pointer"
+                  className="w-full sm:w-auto text-center justify-center bg-[#F5F8FF] hover:bg-[#E3EAFA] text-[#252B3B] border border-[#E8ECF5] text-xs font-bold px-4.5 py-2.5 rounded-xl transition-all cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={scheduleModalDays.length === 0}
-                  className="bg-[#4D5A8F] hover:bg-[#3D4873] active:scale-[0.98] text-white text-xs font-bold px-5 py-2.5 rounded-xl transition-all cursor-pointer shadow-xs inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full sm:w-auto text-center justify-center bg-[#4D5A8F] hover:bg-[#3D4873] active:scale-[0.98] text-white text-xs font-bold px-5 py-2.5 rounded-xl transition-all cursor-pointer shadow-xs inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Plus className="h-4 w-4" />
                   <span>
@@ -5196,17 +6487,17 @@ export default function App() {
               )}
 
               {/* Actions */}
-              <div className="flex items-center gap-2.5 justify-end mt-2 border-t border-[#E8ECF5] pt-4">
+              <div className="flex flex-col-reverse sm:flex-row items-center gap-2 sm:gap-2.5 justify-end mt-2 border-t border-[#E8ECF5] pt-4">
                 <button
                   type="button"
                   onClick={() => setEditingSlotTarget(null)}
-                  className="bg-[#F5F8FF] hover:bg-[#E3EAFA] text-[#252B3B] border border-[#E8ECF5] text-xs font-bold px-4.5 py-2.5 rounded-xl transition-all cursor-pointer"
+                  className="w-full sm:w-auto text-center justify-center bg-[#F5F8FF] hover:bg-[#E3EAFA] text-[#252B3B] border border-[#E8ECF5] text-xs font-bold px-4.5 py-2.5 rounded-xl transition-all cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="bg-[#4D5A8F] hover:bg-[#3D4873] active:scale-[0.98] text-white text-xs font-bold px-5 py-2.5 rounded-xl transition-all cursor-pointer shadow-xs inline-flex items-center gap-1.5"
+                  className="w-full sm:w-auto text-center justify-center bg-[#4D5A8F] hover:bg-[#3D4873] active:scale-[0.98] text-white text-xs font-bold px-5 py-2.5 rounded-xl transition-all cursor-pointer shadow-xs inline-flex items-center gap-1.5"
                 >
                   <Check className="h-4 w-4" />
                   Save Slot Changes
@@ -5344,29 +6635,29 @@ export default function App() {
               )}
 
               {/* Action buttons */}
-              <div className="flex items-center justify-between gap-2 pt-3 border-t border-[#E8ECF5] mt-2">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-3 border-t border-[#E8ECF5] mt-2">
                 {assessmentModalMode === 'edit' && editingAssessmentOriginalName ? (
                   <button
                     type="button"
                     onClick={() => handleDeleteAssessment(editingAssessmentOriginalName)}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer w-full sm:w-auto"
                   >
                     <Trash2 className="h-4 w-4" />
                     <span>Delete Test</span>
                   </button>
-                ) : <div />}
+                ) : <div className="hidden sm:block" />}
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-col-reverse sm:flex-row items-center gap-2 w-full sm:w-auto">
                   <button
                     type="button"
                     onClick={() => setIsAssessmentModalOpen(false)}
-                    className="px-4 py-2 text-xs font-bold text-[#252B3B] bg-[#F5F8FF] hover:bg-[#E3EAFA] border border-[#E8ECF5] rounded-xl transition-colors cursor-pointer"
+                    className="w-full sm:w-auto text-center justify-center px-4 py-2.5 text-xs font-bold text-[#252B3B] bg-[#F5F8FF] hover:bg-[#E3EAFA] border border-[#E8ECF5] rounded-xl transition-colors cursor-pointer"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="px-5 py-2 text-xs font-bold text-white bg-[#4D5A8F] hover:bg-[#3D4873] rounded-xl shadow-xs transition-all cursor-pointer inline-flex items-center gap-1.5 active:scale-95"
+                    className="w-full sm:w-auto text-center justify-center px-5 py-2.5 text-xs font-bold text-white bg-[#4D5A8F] hover:bg-[#3D4873] rounded-xl shadow-xs transition-all cursor-pointer inline-flex items-center gap-1.5 active:scale-95"
                   >
                     <Check className="h-4 w-4" />
                     <span>{assessmentModalMode === 'add' ? 'Add Assessment' : 'Save Changes'}</span>
@@ -5496,11 +6787,11 @@ export default function App() {
                 )}
 
                 {/* Action buttons */}
-                <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#E8ECF5]">
+                <div className="flex flex-col-reverse sm:flex-row items-center justify-end gap-2 sm:gap-2.5 pt-3 border-t border-[#E8ECF5]">
                   <button
                     type="button"
                     onClick={() => setIsFinalGradeModalOpen(false)}
-                    className="px-4 py-2 text-xs font-bold text-[#252B3B] bg-[#F5F8FF] hover:bg-[#E3EAFA] border border-[#E8ECF5] rounded-xl transition-colors cursor-pointer"
+                    className="w-full sm:w-auto text-center justify-center px-4 py-2.5 text-xs font-bold text-[#252B3B] bg-[#F5F8FF] hover:bg-[#E3EAFA] border border-[#E8ECF5] rounded-xl transition-colors cursor-pointer"
                   >
                     Cancel
                   </button>
@@ -5508,7 +6799,7 @@ export default function App() {
                     type="button"
                     onClick={handleSaveFinalGradeWeights}
                     disabled={((Object.values(tempWeights) as number[]).reduce((sum: number, w: number) => sum + (Number(w) || 0), 0)) > 100}
-                    className="px-5 py-2 text-xs font-bold text-white bg-[#4D5A8F] hover:bg-[#3D4873] disabled:opacity-50 disabled:cursor-not-allowed rounded-xl shadow-xs transition-all cursor-pointer inline-flex items-center gap-1.5 active:scale-95"
+                    className="w-full sm:w-auto text-center justify-center px-5 py-2.5 text-xs font-bold text-white bg-[#4D5A8F] hover:bg-[#3D4873] disabled:opacity-50 disabled:cursor-not-allowed rounded-xl shadow-xs transition-all cursor-pointer inline-flex items-center gap-1.5 active:scale-95"
                   >
                     <Check className="h-4 w-4" />
                     <span>Save Weights</span>
@@ -5539,18 +6830,18 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-1 border-t border-[#E8ECF5]">
+            <div className="flex flex-col-reverse sm:flex-row items-center justify-end gap-2 pt-2 border-t border-[#E8ECF5]">
               <button
                 type="button"
                 onClick={() => setConfirmDeleteDateTarget(null)}
-                className="px-3.5 py-1.5 text-xs font-semibold text-[#252B3B] bg-[#F5F8FF] hover:bg-[#E3EAFA] border border-[#E8ECF5] rounded-xl transition-colors cursor-pointer"
+                className="w-full sm:w-auto text-center justify-center px-3.5 py-2 text-xs font-semibold text-[#252B3B] bg-[#F5F8FF] hover:bg-[#E3EAFA] border border-[#E8ECF5] rounded-xl transition-colors cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={() => handleDeleteAttendanceDate(confirmDeleteDateTarget.date)}
-                className="px-3.5 py-1.5 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95"
+                className="w-full sm:w-auto text-center justify-center px-3.5 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95"
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 <span>Delete Date Column</span>
@@ -5579,18 +6870,18 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-1 border-t border-[#E8ECF5]">
+            <div className="flex flex-col-reverse sm:flex-row items-center justify-end gap-2 pt-2 border-t border-[#E8ECF5]">
               <button
                 type="button"
                 onClick={() => setConfirmDeleteStudentTarget(null)}
-                className="px-3.5 py-1.5 text-xs font-semibold text-[#252B3B] bg-[#F5F8FF] hover:bg-[#E3EAFA] border border-[#E8ECF5] rounded-xl transition-colors cursor-pointer"
+                className="w-full sm:w-auto text-center justify-center px-3.5 py-2 text-xs font-semibold text-[#252B3B] bg-[#F5F8FF] hover:bg-[#E3EAFA] border border-[#E8ECF5] rounded-xl transition-colors cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={() => handleDeleteStudentFromClass(confirmDeleteStudentTarget.studentId, confirmDeleteStudentTarget.className)}
-                className="px-3.5 py-1.5 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95"
+                className="w-full sm:w-auto text-center justify-center px-3.5 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95"
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 <span>Confirm Delete</span>
@@ -5600,8 +6891,297 @@ export default function App() {
         </div>
       )}
 
+      {/* Calendar & Agenda: Event Creator / Editor Modal */}
+      {isEventModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-3xs animate-in fade-in duration-150" id="calendar-event-editor-modal">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-[#E8ECF5] flex flex-col gap-5 animate-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-[#E8ECF5] pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-[#E3EAFA] text-[#4D5A8F] rounded-xl border border-[#CED8F2]">
+                  <CalendarPlus className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-[#252B3B]">
+                    {editingEventId ? 'Edit Calendar Event or Note' : 'Add Calendar Event or Note'}
+                  </h3>
+                  <p className="text-xs text-[#747D91]">
+                    Record an exam, meeting, deadline, or general class note.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEventModalOpen(false)}
+                className="p-1.5 hover:bg-[#E3EAFA] rounded-full text-[#747D91] hover:text-[#252B3B] transition-colors cursor-pointer"
+                title="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Error Message */}
+            {eventModalError && (
+              <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs px-3.5 py-2.5 rounded-xl flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
+                <span>{eventModalError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveEvent} className="flex flex-col gap-4">
+              {/* Event Title */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-bold text-[#252B3B]">
+                  Title / Subject <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={eventTitleInput}
+                  onChange={(e) => setEventTitleInput(e.target.value)}
+                  placeholder="e.g. Midterm Exam, Staff Meeting, Project Deadline..."
+                  className="w-full px-3.5 py-2.5 bg-[#F5F8FF] border border-[#E8ECF5] rounded-xl text-xs font-semibold text-[#252B3B] placeholder-[#747D91]/60 focus:bg-white focus:border-[#4D5A8F] focus:ring-2 focus:ring-[#4D5A8F]/20 outline-none transition-all"
+                  autoFocus
+                />
+              </div>
+
+              {/* Event Type Pills */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-bold text-[#252B3B]">
+                  Category Type
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                  {(['exam', 'meeting', 'lecture', 'deadline', 'note'] as CalendarEventType[]).map(typeKey => {
+                    const badge = getEventTypeBadgeInfo(typeKey);
+                    const isSelected = eventTypeInput === typeKey;
+                    return (
+                      <button
+                        key={typeKey}
+                        type="button"
+                        onClick={() => setEventTypeInput(typeKey)}
+                        className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-[#4D5A8F] text-white border-[#4D5A8F] shadow-xs'
+                            : `${badge.chipBg} border-[#E8ECF5]`
+                        }`}
+                      >
+                        <span className={`w-2 h-2 rounded-full ${isSelected ? 'bg-white' : badge.dotBg}`} />
+                        <span>{badge.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Date & Time Row */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                {/* Date */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-bold text-[#252B3B]">
+                    Date <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={eventDateInput}
+                    onChange={(e) => setEventDateInput(e.target.value)}
+                    className="w-full px-3.5 py-2.5 bg-[#F5F8FF] border border-[#E8ECF5] rounded-xl text-xs font-semibold text-[#252B3B] focus:bg-white focus:border-[#4D5A8F] focus:ring-2 focus:ring-[#4D5A8F]/20 outline-none transition-all cursor-pointer"
+                  />
+                </div>
+
+                {/* Time & All-Day */}
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-[#252B3B]">
+                      Meeting Hour / Time
+                    </label>
+                    <label className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#6D7CB0] cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={isEventAllDay}
+                        onChange={(e) => setIsEventAllDay(e.target.checked)}
+                        className="rounded border-[#B3C0E6] text-[#4D5A8F] focus:ring-[#4D5A8F]"
+                      />
+                      <span>All Day</span>
+                    </label>
+                  </div>
+                  <input
+                    type="text"
+                    disabled={isEventAllDay}
+                    value={isEventAllDay ? 'All Day' : eventTimeInput}
+                    onChange={(e) => setEventTimeInput(e.target.value)}
+                    placeholder="e.g. 10:00 AM - 11:30 AM"
+                    className={`w-full px-3.5 py-2.5 border rounded-xl text-xs font-semibold transition-all ${
+                      isEventAllDay
+                        ? 'bg-[#E3EAFA]/50 text-[#747D91] border-[#E8ECF5] cursor-not-allowed'
+                        : 'bg-[#F5F8FF] text-[#252B3B] border-[#E8ECF5] focus:bg-white focus:border-[#4D5A8F] focus:ring-2 focus:ring-[#4D5A8F]/20 outline-none'
+                    }`}
+                  />
+                </div>
+              </div>
+
+              {/* Class Section Target */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-bold text-[#252B3B]">
+                  Associated Class Section
+                </label>
+                <select
+                  value={eventClassInput}
+                  onChange={(e) => setEventClassInput(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-[#F5F8FF] border border-[#E8ECF5] rounded-xl text-xs font-semibold text-[#252B3B] focus:bg-white focus:border-[#4D5A8F] focus:ring-2 focus:ring-[#4D5A8F]/20 outline-none transition-all cursor-pointer"
+                >
+                  <option value="All Classes">All Classes (General Academic Note)</option>
+                  {classes.map(c => (
+                    <option key={c.name} value={c.name}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Description / Detailed Notes */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-bold text-[#252B3B]">
+                  Details &amp; Agenda Notes
+                </label>
+                <textarea
+                  rows={3}
+                  value={eventDescriptionInput}
+                  onChange={(e) => setEventDescriptionInput(e.target.value)}
+                  placeholder="Add exam room, chapters to study, meeting agenda items, or specific instructions for this day..."
+                  className="w-full px-3.5 py-2.5 bg-[#F5F8FF] border border-[#E8ECF5] rounded-xl text-xs font-medium text-[#252B3B] placeholder-[#747D91]/60 focus:bg-white focus:border-[#4D5A8F] focus:ring-2 focus:ring-[#4D5A8F]/20 outline-none transition-all resize-y"
+                />
+              </div>
+
+              {/* Modal Actions */}
+              <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 sm:gap-2.5 pt-3 border-t border-[#E8ECF5]">
+                <button
+                  type="button"
+                  onClick={() => setIsEventModalOpen(false)}
+                  className="w-full sm:w-auto text-center justify-center px-4 py-2.5 text-xs font-semibold text-[#252B3B] bg-[#F5F8FF] hover:bg-[#E3EAFA] border border-[#E8ECF5] rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="w-full sm:w-auto text-center justify-center px-5 py-2.5 text-xs font-bold text-white bg-[#4D5A8F] hover:bg-[#3D4873] rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95"
+                >
+                  <Check className="h-4 w-4" />
+                  <span>{editingEventId ? 'Save Changes' : 'Create Entry'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Calendar Event Confirmation Modal */}
+      {confirmDeleteEventTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-3xs animate-in fade-in duration-150" id="delete-calendar-event-modal">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-rose-200 flex flex-col gap-4 animate-in zoom-in-95 duration-150">
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 rounded-xl bg-rose-100 text-rose-600 shrink-0">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-sm font-bold text-[#252B3B]">Delete Calendar Entry</h4>
+                <p className="text-xs text-[#747D91] mt-1 leading-normal">
+                  Are you sure you want to delete <strong className="text-[#252B3B] font-bold">{confirmDeleteEventTarget.title}</strong> scheduled for <strong className="text-[#252B3B] font-bold">{formatFullDateString(confirmDeleteEventTarget.date)}</strong>?
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col-reverse sm:flex-row items-center justify-end gap-2 pt-2 border-t border-[#E8ECF5]">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteEventTarget(null)}
+                className="w-full sm:w-auto text-center justify-center px-3.5 py-2 text-xs font-semibold text-[#252B3B] bg-[#F5F8FF] hover:bg-[#E3EAFA] border border-[#E8ECF5] rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteEvent(confirmDeleteEventTarget.id)}
+                className="w-full sm:w-auto text-center justify-center px-3.5 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Confirm Delete</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mobile Fixed Bottom Navigation Bar - Ergonomic thumb reach for phone users */}
+      <nav
+        id="omni-mobile-bottom-nav"
+        aria-label="Mobile Navigation"
+        className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#E8ECF5] px-1 py-1 flex lg:hidden items-center justify-around shadow-[0_-4px_16px_rgba(0,0,0,0.06)]"
+      >
+        <button
+          type="button"
+          onClick={() => handleSelectTab('timetable')}
+          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-xl transition-all min-h-[46px] cursor-pointer ${
+            activeTab === 'timetable'
+              ? 'text-[#4D5A8F] font-bold bg-[#E3EAFA]/70'
+              : 'text-[#747D91] hover:text-[#4D5A8F] font-medium'
+          }`}
+        >
+          <Clock className={`h-4.5 w-4.5 mb-0.5 ${activeTab === 'timetable' ? 'text-[#4D5A8F]' : 'text-[#747D91]'}`} />
+          <span className="text-[10px] leading-tight">Timetable</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => handleSelectTab('calendar')}
+          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-xl transition-all min-h-[46px] cursor-pointer ${
+            activeTab === 'calendar'
+              ? 'text-[#4D5A8F] font-bold bg-[#E3EAFA]/70'
+              : 'text-[#747D91] hover:text-[#4D5A8F] font-medium'
+          }`}
+        >
+          <CalendarDays className={`h-4.5 w-4.5 mb-0.5 ${activeTab === 'calendar' ? 'text-[#4D5A8F]' : 'text-[#747D91]'}`} />
+          <span className="text-[10px] leading-tight">Calendar</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => handleSelectTab('students')}
+          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-xl transition-all min-h-[46px] cursor-pointer ${
+            activeTab === 'students'
+              ? 'text-[#4D5A8F] font-bold bg-[#E3EAFA]/70'
+              : 'text-[#747D91] hover:text-[#4D5A8F] font-medium'
+          }`}
+        >
+          <Users className={`h-4.5 w-4.5 mb-0.5 ${activeTab === 'students' ? 'text-[#4D5A8F]' : 'text-[#747D91]'}`} />
+          <span className="text-[10px] leading-tight">Students</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => handleSelectTab('attendance')}
+          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-xl transition-all min-h-[46px] cursor-pointer ${
+            activeTab === 'attendance'
+              ? 'text-[#4D5A8F] font-bold bg-[#E3EAFA]/70'
+              : 'text-[#747D91] hover:text-[#4D5A8F] font-medium'
+          }`}
+        >
+          <CalendarCheck className={`h-4.5 w-4.5 mb-0.5 ${activeTab === 'attendance' ? 'text-[#4D5A8F]' : 'text-[#747D91]'}`} />
+          <span className="text-[10px] leading-tight">Attendance</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => handleSelectTab('grades')}
+          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-xl transition-all min-h-[46px] cursor-pointer ${
+            activeTab === 'grades'
+              ? 'text-[#4D5A8F] font-bold bg-[#E3EAFA]/70'
+              : 'text-[#747D91] hover:text-[#4D5A8F] font-medium'
+          }`}
+        >
+          <GraduationCap className={`h-4.5 w-4.5 mb-0.5 ${activeTab === 'grades' ? 'text-[#4D5A8F]' : 'text-[#747D91]'}`} />
+          <span className="text-[10px] leading-tight">Grades</span>
+        </button>
+      </nav>
+
       {/* footer credits */}
-      <footer className="bg-white px-6 py-3 border-t border-[#E8ECF5] text-center text-[10px] text-[#747D91] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2" id="omni-class-footer">
+      <footer className="bg-white px-6 py-3 pb-20 lg:pb-3 border-t border-[#E8ECF5] text-center text-[10px] text-[#747D91] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2" id="omni-class-footer">
         <span>Omni Class — Academic Roster, Attendance & Grade Records Manager</span>
         <span className="font-mono text-[#8F9DCC]">Offline-Ready & Cloud-Connected</span>
       </footer>

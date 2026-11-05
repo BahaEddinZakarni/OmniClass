@@ -41,3 +41,18 @@ export interface ClassSection {
   };
   schedule?: ClassScheduleSlot[];
 }
+
+export type CalendarEventType = 'exam' | 'meeting' | 'lecture' | 'deadline' | 'note';
+
+export interface CalendarEvent {
+  id: string;
+  date: string; // Canonical YYYY-MM-DD
+  title: string;
+  time?: string; // e.g. "10:00 AM" or "All Day"
+  className?: string; // Class name or empty/General
+  type: CalendarEventType;
+  description?: string;
+  color?: string;
+  createdAt?: string | number;
+}
+
