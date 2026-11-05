@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   GraduationCap, 
   Users, 
@@ -288,34 +289,38 @@ function StudentGearBox({
   const menuRef = useRef<HTMLDivElement>(null);
   const [coords, setCoords] = useState<{ top?: number; bottom?: number; left: number; openUpwards: boolean } | null>(null);
 
+  const updatePosition = useCallback(() => {
+    if (!buttonRef.current) return;
+    const rect = buttonRef.current.getBoundingClientRect();
+    if (rect.bottom < 0 || rect.top > window.innerHeight) {
+      onClose();
+      return;
+    }
+    const popoverWidth = 240;
+    const popoverHeight = 280;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const openUpwards = spaceBelow < popoverHeight && rect.top > popoverHeight;
+
+    let left = rect.left;
+    if (left + popoverWidth > window.innerWidth - 12) {
+      left = Math.max(12, window.innerWidth - popoverWidth - 12);
+    }
+
+    setCoords({
+      top: openUpwards ? undefined : rect.bottom + 6,
+      bottom: openUpwards ? window.innerHeight - rect.top + 6 : undefined,
+      left: Math.max(8, left),
+      openUpwards
+    });
+  }, [onClose]);
+
   useEffect(() => {
-    if (isOpen && buttonRef.current) {
-      const updatePosition = () => {
-        if (!buttonRef.current) return;
-        const rect = buttonRef.current.getBoundingClientRect();
-        const popoverWidth = 230;
-        const popoverHeight = 260;
-        const spaceBelow = window.innerHeight - rect.bottom;
-        const openUpwards = spaceBelow < popoverHeight && rect.top > popoverHeight;
-
-        let left = rect.left;
-        if (left + popoverWidth > window.innerWidth - 12) {
-          left = Math.max(12, window.innerWidth - popoverWidth - 12);
-        }
-
-        setCoords({
-          top: openUpwards ? undefined : rect.bottom + 6,
-          bottom: openUpwards ? window.innerHeight - rect.top + 6 : undefined,
-          left: Math.max(8, left),
-          openUpwards
-        });
-      };
-
+    if (isOpen) {
       updatePosition();
     } else {
       setCoords(null);
     }
-  }, [isOpen]);
+  }, [isOpen, updatePosition]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -328,11 +333,10 @@ function StudentGearBox({
       }
     };
     const handleScrollOrResize = (e: Event) => {
-      // If scroll happens inside the menu itself, do not close
       if (menuRef.current && e.target instanceof Node && menuRef.current.contains(e.target)) {
         return;
       }
-      onClose();
+      updatePosition();
     };
 
     document.addEventListener('mousedown', handleOutside);
@@ -343,7 +347,92 @@ function StudentGearBox({
       window.removeEventListener('scroll', handleScrollOrResize, true);
       window.removeEventListener('resize', handleScrollOrResize);
     };
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, updatePosition]);
+
+  const popoverMenu = isOpen && coords && typeof document !== 'undefined' ? (
+    <div 
+      ref={menuRef}
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        position: 'fixed',
+        top: coords.top !== undefined ? `${coords.top}px` : undefined,
+        bottom: coords.bottom !== undefined ? `${coords.bottom}px` : undefined,
+        left: `${coords.left}px`,
+        zIndex: 99999,
+      }}
+      className="w-60 bg-white rounded-2xl shadow-2xl border border-[#CED8F2] p-3.5 flex flex-col gap-2.5 animate-in fade-in zoom-in-95 duration-150 text-left pointer-events-auto"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-[#E8ECF5] pb-2">
+        <div className="min-w-0 pr-1">
+          <span className="text-xs font-bold text-[#252B3B] truncate block">{student.fullName}</span>
+          <span className="text-[10px] text-[#6D7CB0] font-mono font-bold">ID: {student.id}</span>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="p-1 text-[#747D91] hover:text-[#252B3B] rounded-lg hover:bg-[#E3EAFA] cursor-pointer transition-colors"
+          title="Close student menu"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      </div>
+
+      {/* 1. HIGHLIGHT COLOR (ABOVE DELETE OPTION) */}
+      <div className="flex flex-col gap-1.5">
+        <span className="text-[10px] font-bold text-[#747D91] uppercase tracking-wider">
+          Highlight Color:
+        </span>
+        <div className="grid grid-cols-2 gap-1.5">
+          <button
+            type="button"
+            onClick={() => onSelectColor('none')}
+            className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
+              !student.color || student.color === 'none'
+                ? 'bg-[#E3EAFA] text-[#4D5A8F] border-[#4D5A8F] ring-1 ring-[#4D5A8F] font-extrabold'
+                : 'bg-white text-[#252B3B] border-[#E8ECF5] hover:bg-[#F5F8FF]'
+            }`}
+          >
+            <X className="h-3 w-3 text-[#252B3B]" />
+            <span>None</span>
+          </button>
+
+          {HIGHLIGHT_COLORS.map(c => {
+            const isSelected = student.color === c.id;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => onSelectColor(c.id)}
+                className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
+                  isSelected
+                    ? `${c.bgClass} text-slate-900 border-[#4D5A8F] ring-2 ring-[#4D5A8F] font-black shadow-3xs`
+                    : `${c.bgClass} text-slate-700 border-slate-200 hover:brightness-95`
+                }`}
+              >
+                <span className={`w-2.5 h-2.5 rounded-full ${c.dotClass} shrink-0 border border-black/10`} />
+                <span>{c.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="h-px bg-[#E8ECF5]" />
+
+      {/* 2. DELETE OPTION (BELOW HIGHLIGHT OPTION) */}
+      <div className="flex flex-col gap-1">
+        <button
+          type="button"
+          onClick={onDeleteRequest}
+          className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-200 rounded-xl text-[11px] font-bold transition-all cursor-pointer active:scale-95"
+        >
+          <Trash2 className="h-3.5 w-3.5 text-rose-600" />
+          <span>Delete Student</span>
+        </button>
+      </div>
+    </div>
+  ) : null;
 
   return (
     <div className="inline-flex items-center">
@@ -365,89 +454,7 @@ function StudentGearBox({
         <Settings className="h-3.5 w-3.5" />
       </button>
 
-      {isOpen && coords && (
-        <div 
-          ref={menuRef}
-          onClick={(e) => e.stopPropagation()}
-          style={{
-            position: 'fixed',
-            top: coords.top !== undefined ? `${coords.top}px` : undefined,
-            bottom: coords.bottom !== undefined ? `${coords.bottom}px` : undefined,
-            left: `${coords.left}px`,
-            zIndex: 9999,
-          }}
-          className="w-58 bg-white rounded-2xl shadow-xl border border-[#E8ECF5] p-3 flex flex-col gap-2.5 animate-in fade-in zoom-in-95 duration-150 text-left"
-        >
-          {/* Header */}
-          <div className="flex items-center justify-between border-b border-[#E8ECF5] pb-2">
-            <div className="min-w-0 pr-1">
-              <span className="text-xs font-bold text-[#252B3B] truncate block">{student.fullName}</span>
-              <span className="text-[10px] text-[#6D7CB0] font-mono font-bold">ID: {student.id}</span>
-            </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-1 text-[#747D91] hover:text-[#252B3B] rounded-lg hover:bg-[#E3EAFA] cursor-pointer transition-colors"
-            >
-              <X className="h-3 w-3" />
-            </button>
-          </div>
-
-          {/* 1. HIGHLIGHT COLOR (ABOVE DELETE OPTION) */}
-          <div className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold text-[#747D91] uppercase tracking-wider">
-              Highlight Color:
-            </span>
-            <div className="grid grid-cols-2 gap-1.5">
-              <button
-                type="button"
-                onClick={() => onSelectColor('none')}
-                className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
-                  !student.color || student.color === 'none'
-                    ? 'bg-[#E3EAFA] text-[#4D5A8F] border-[#4D5A8F] ring-1 ring-[#4D5A8F] font-extrabold'
-                    : 'bg-white text-[#252B3B] border-[#E8ECF5] hover:bg-[#F5F8FF]'
-                }`}
-              >
-                <X className="h-3 w-3 text-[#252B3B]" />
-                <span>None</span>
-              </button>
-
-              {HIGHLIGHT_COLORS.map(c => {
-                const isSelected = student.color === c.id;
-                return (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => onSelectColor(c.id)}
-                    className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
-                      isSelected
-                        ? `${c.bgClass} text-slate-900 border-[#4D5A8F] ring-2 ring-[#4D5A8F] font-black shadow-3xs`
-                        : `${c.bgClass} text-slate-700 border-slate-200 hover:brightness-95`
-                    }`}
-                  >
-                    <span className={`w-2.5 h-2.5 rounded-full ${c.dotClass} shrink-0 border border-black/10`} />
-                    <span>{c.name}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="h-px bg-[#E8ECF5]" />
-
-          {/* 2. DELETE OPTION (BELOW HIGHLIGHT OPTION) */}
-          <div className="flex flex-col gap-1">
-            <button
-              type="button"
-              onClick={onDeleteRequest}
-              className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-200 rounded-xl text-[11px] font-bold transition-all cursor-pointer active:scale-95"
-            >
-              <Trash2 className="h-3.5 w-3.5 text-rose-600" />
-              <span>Delete Student</span>
-            </button>
-          </div>
-        </div>
-      )}
+      {popoverMenu && createPortal(popoverMenu, document.body)}
     </div>
   );
 }
@@ -609,12 +616,11 @@ export const formatFullDateString = (ymdStr: string): string => {
   const month = parseInt(parts[1], 10) - 1;
   const day = parseInt(parts[2], 10);
   const d = new Date(year, month, day);
-  return d.toLocaleDateString('en-US', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric'
-  });
+  const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const weekday = weekdays[d.getDay()] || '';
+  const monthName = months[month] || '';
+  return `${weekday}, ${day} ${monthName} ${year}`;
 };
 
 export const getRelativeDateLabel = (ymdStr: string): string | null => {
@@ -775,7 +781,7 @@ function DDMMYYDatePicker({ value, onChange, className = '', id }: DDMMYYDatePic
       </div>
 
       {isOpen && (
-        <div className="absolute left-0 top-full mt-1.5 z-50 bg-white border border-[#E8ECF5] rounded-2xl shadow-xl p-3 w-72 animate-in fade-in zoom-in-95 duration-100">
+        <div className="absolute left-0 top-full mt-1.5 z-[60] bg-white border border-[#E8ECF5] rounded-2xl shadow-xl p-3 w-72 animate-in fade-in zoom-in-95 duration-100">
           <div className="flex items-center justify-between mb-2 pb-2 border-b border-[#E8ECF5]">
             <button
               type="button"
@@ -3859,7 +3865,7 @@ export default function App() {
                 id="quick-header-class-select"
                 value={activeClassName}
                 onChange={(e) => setActiveClassName(e.target.value)}
-                className="text-xs font-bold bg-[#F5F8FF] text-[#252B3B] border border-[#E8ECF5] rounded-xl px-2.5 py-1.5 pr-7 focus:border-[#4D5A8F] focus:ring-2 focus:ring-[#4D5A8F]/20 outline-none cursor-pointer shadow-3xs truncate max-w-[125px] sm:max-w-[200px]"
+                className="appearance-none [-webkit-appearance:none] [-moz-appearance:none] text-xs font-bold bg-[#F5F8FF] text-[#252B3B] border border-[#E8ECF5] rounded-xl px-2.5 py-1.5 pr-7 focus:border-[#4D5A8F] focus:ring-2 focus:ring-[#4D5A8F]/20 outline-none cursor-pointer shadow-3xs truncate max-w-[125px] sm:max-w-[200px]"
                 title="Switch active class section"
               >
                 {classes.map(c => (
@@ -4894,8 +4900,8 @@ export default function App() {
                         <table className="w-full text-left border-separate border-spacing-0" id="students-table-matrix">
                           <thead>
                             <tr className="bg-[#E3EAFA] text-[#252B3B] text-[10px] uppercase font-bold tracking-widest">
-                              <th className="sticky left-0 z-20 bg-[#E3EAFA] pl-3.5 sm:pl-4 pr-1.5 py-3 whitespace-nowrap w-[130px] min-w-[130px] max-w-[130px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]">ID Number</th>
-                              <th className="sticky left-[130px] z-20 bg-[#E3EAFA] pl-2 pr-3 sm:pr-4 py-3 whitespace-nowrap w-[160px] min-w-[160px] sm:w-[190px] sm:min-w-[190px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]">Student Name</th>
+                              <th className="sticky left-0 z-20 bg-[#E3EAFA] pl-4 pr-3 py-3 whitespace-nowrap w-[155px] min-w-[155px] max-w-[155px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]">ID Number</th>
+                              <th className="sticky left-[155px] z-20 bg-[#E3EAFA] pl-4 pr-4 py-3 whitespace-nowrap w-[175px] min-w-[175px] sm:w-[210px] sm:min-w-[210px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]">Student Name</th>
                               <th className="px-4 py-3 whitespace-nowrap border-b border-[#E8ECF5]">Academic Sneak Peek (Semester Progress)</th>
                             </tr>
                           </thead>
@@ -4910,10 +4916,10 @@ export default function App() {
                               return (
                                 <tr key={s.id} className={`${rowBgClass} ${colorInfo.hover || 'hover:bg-[#F5F8FF]'} transition-all`}>
                                   <td 
-                                    className={`sticky left-0 z-10 pl-3.5 sm:pl-4 pr-1.5 py-3 whitespace-nowrap font-medium ${colorInfo.border || ''} w-[130px] min-w-[130px] max-w-[130px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]`}
+                                    className={`sticky left-0 z-10 pl-4 pr-3 py-3 whitespace-nowrap font-medium ${colorInfo.border || ''} w-[155px] min-w-[155px] max-w-[155px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]`}
                                     style={{ backgroundColor: colorInfo.solidBg || '#ffffff' }}
                                   >
-                                    <div className="flex items-center gap-1.5">
+                                    <div className="flex items-center gap-2">
                                       <StudentGearBox
                                         student={s}
                                         className={activeClass.name}
@@ -4936,13 +4942,13 @@ export default function App() {
                                           setActiveGearStudent(null);
                                         }}
                                       />
-                                      <span className="font-mono text-xs font-bold text-[#252B3B] bg-[#F5F8FF] px-2 py-0.5 rounded border border-[#E8ECF5] shadow-3xs">
+                                      <span className="font-mono text-xs font-bold text-[#252B3B] bg-[#F5F8FF] px-2.5 py-1 rounded-lg border border-[#E8ECF5] shadow-3xs">
                                         {s.id}
                                       </span>
                                     </div>
                                   </td>
                                   <td 
-                                    className="sticky left-[130px] z-10 pl-2 pr-3 sm:pr-4 py-3 font-bold text-[#252B3B] whitespace-nowrap w-[160px] min-w-[160px] sm:w-[190px] sm:min-w-[190px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]"
+                                    className="sticky left-[155px] z-10 pl-4 pr-4 py-3 font-bold text-[#252B3B] whitespace-nowrap w-[175px] min-w-[175px] sm:w-[210px] sm:min-w-[210px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]"
                                     style={{ backgroundColor: colorInfo.solidBg || '#ffffff' }}
                                   >
                                     <span>{s.fullName}</span>
@@ -5073,8 +5079,8 @@ export default function App() {
                         <table className="w-full text-left border-separate border-spacing-0" id="attendance-table-matrix">
                           <thead>
                             <tr className="bg-[#E3EAFA] text-[#252B3B] text-[10px] uppercase font-bold tracking-widest">
-                              <th className="sticky left-0 z-20 bg-[#E3EAFA] pl-3.5 sm:pl-4 pr-1.5 py-3.5 whitespace-nowrap w-[105px] min-w-[105px] max-w-[105px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]">ID Number</th>
-                              <th className="sticky left-[105px] z-20 bg-[#E3EAFA] pl-2 pr-3 sm:pr-4 py-3.5 whitespace-nowrap w-[155px] min-w-[155px] sm:w-[190px] sm:min-w-[190px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]">Full Name</th>
+                              <th className="sticky left-0 z-20 bg-[#E3EAFA] pl-4 pr-3 py-3.5 whitespace-nowrap w-[130px] min-w-[130px] max-w-[130px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]">ID Number</th>
+                              <th className="sticky left-[130px] z-20 bg-[#E3EAFA] pl-4 pr-4 py-3.5 whitespace-nowrap w-[175px] min-w-[175px] sm:w-[210px] sm:min-w-[210px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]">Full Name</th>
                               {getAttendanceDates(activeClass).map(d => (
                                 <th key={d} className="px-3 sm:px-4 py-3.5 whitespace-nowrap text-center border-b border-[#E8ECF5]">
                                   <div className="inline-flex items-center gap-1.5 justify-center">
@@ -5101,16 +5107,18 @@ export default function App() {
                               return (
                                 <tr key={s.id} className={`${rowBgClass} ${colorInfo.hover || 'hover:bg-[#F5F8FF]'} transition-all`}>
                                   <td 
-                                    className={`sticky left-0 z-10 pl-3.5 sm:pl-4 pr-1.5 py-3.5 text-[#747D91] font-mono font-medium ${colorInfo.border || ''} w-[105px] min-w-[105px] max-w-[105px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]`}
+                                    className={`sticky left-0 z-10 pl-4 pr-3 py-3.5 font-medium ${colorInfo.border || ''} w-[130px] min-w-[130px] max-w-[130px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]`}
                                     style={{ backgroundColor: colorInfo.solidBg || '#ffffff' }}
                                   >
-                                    {s.id}
+                                    <span className="font-mono text-xs font-bold text-[#252B3B] bg-[#F5F8FF] px-2.5 py-1 rounded-lg border border-[#E8ECF5] shadow-3xs inline-block">
+                                      {s.id}
+                                    </span>
                                   </td>
                                   <td 
-                                    className="sticky left-[105px] z-10 pl-2 pr-3 sm:pr-4 py-3.5 font-bold text-[#252B3B] whitespace-nowrap w-[155px] min-w-[155px] sm:w-[190px] sm:min-w-[190px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]"
+                                    className="sticky left-[130px] z-10 pl-4 pr-4 py-3.5 font-bold text-[#252B3B] whitespace-nowrap w-[175px] min-w-[175px] sm:w-[210px] sm:min-w-[210px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]"
                                     style={{ backgroundColor: colorInfo.solidBg || '#ffffff' }}
                                   >
-                                    {s.fullName}
+                                    <span>{s.fullName}</span>
                                   </td>
                                   {getAttendanceDates(activeClass).map(d => {
                                     const status = activeClass.attendance[s.id]?.[d] || 'Not Taken';
@@ -5233,8 +5241,8 @@ export default function App() {
                         <table className="w-full text-left border-separate border-spacing-0" id="grades-table-matrix">
                           <thead>
                             <tr className="bg-[#E3EAFA] text-[#252B3B] text-[10px] uppercase font-bold tracking-widest">
-                              <th className="sticky left-0 z-20 bg-[#E3EAFA] pl-3.5 sm:pl-4 pr-1.5 py-3.5 whitespace-nowrap w-[105px] min-w-[105px] max-w-[105px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]">ID Number</th>
-                              <th className="sticky left-[105px] z-20 bg-[#E3EAFA] pl-2 pr-3 sm:pr-4 py-3.5 whitespace-nowrap w-[155px] min-w-[155px] sm:w-[190px] sm:min-w-[190px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]">Full Name</th>
+                              <th className="sticky left-0 z-20 bg-[#E3EAFA] pl-4 pr-3 py-3.5 whitespace-nowrap w-[130px] min-w-[130px] max-w-[130px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]">ID Number</th>
+                              <th className="sticky left-[130px] z-20 bg-[#E3EAFA] pl-4 pr-4 py-3.5 whitespace-nowrap w-[175px] min-w-[175px] sm:w-[210px] sm:min-w-[210px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]">Full Name</th>
                               {activeClass.assessments.map(a => (
                                 <th 
                                   key={a.name} 
@@ -5280,16 +5288,18 @@ export default function App() {
                               return (
                                 <tr key={s.id} className={`${rowBgClass} ${colorInfo.hover || 'hover:bg-[#F5F8FF]'} transition-all`}>
                                   <td 
-                                    className={`sticky left-0 z-10 pl-3.5 sm:pl-4 pr-1.5 py-3.5 text-[#747D91] font-mono font-medium ${colorInfo.border || ''} w-[105px] min-w-[105px] max-w-[105px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]`}
+                                    className={`sticky left-0 z-10 pl-4 pr-3 py-3.5 font-medium ${colorInfo.border || ''} w-[130px] min-w-[130px] max-w-[130px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]`}
                                     style={{ backgroundColor: colorInfo.solidBg || '#ffffff' }}
                                   >
-                                    {s.id}
+                                    <span className="font-mono text-xs font-bold text-[#252B3B] bg-[#F5F8FF] px-2.5 py-1 rounded-lg border border-[#E8ECF5] shadow-3xs inline-block">
+                                      {s.id}
+                                    </span>
                                   </td>
                                   <td 
-                                    className="sticky left-[105px] z-10 pl-2 pr-3 sm:pr-4 py-3.5 font-bold text-[#252B3B] whitespace-nowrap w-[155px] min-w-[155px] sm:w-[190px] sm:min-w-[190px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]"
+                                    className="sticky left-[130px] z-10 pl-4 pr-4 py-3.5 font-bold text-[#252B3B] whitespace-nowrap w-[175px] min-w-[175px] sm:w-[210px] sm:min-w-[210px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]"
                                     style={{ backgroundColor: colorInfo.solidBg || '#ffffff' }}
                                   >
-                                    {s.fullName}
+                                    <span>{s.fullName}</span>
                                   </td>
                                   {activeClass.assessments.map(a => {
                                     const score = activeClass.grades[s.id]?.[a.name];
@@ -7071,11 +7081,10 @@ export default function App() {
                   <label className="text-xs font-bold text-[#252B3B]">
                     Date <span className="text-rose-500">*</span>
                   </label>
-                  <input
-                    type="date"
+                  <DDMMYYDatePicker
+                    id="event-date-picker"
                     value={eventDateInput}
-                    onChange={(e) => setEventDateInput(e.target.value)}
-                    className="w-full px-3.5 py-2.5 bg-[#F5F8FF] border border-[#E8ECF5] rounded-xl text-xs font-semibold text-[#252B3B] focus:bg-white focus:border-[#4D5A8F] focus:ring-2 focus:ring-[#4D5A8F]/20 outline-none transition-all cursor-pointer"
+                    onChange={setEventDateInput}
                   />
                 </div>
 
