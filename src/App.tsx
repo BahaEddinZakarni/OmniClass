@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   GraduationCap, 
   Users, 
@@ -247,19 +247,20 @@ export const formatDisplayDate = (d: string): string => {
 };
 
 const HIGHLIGHT_COLORS = [
-  { id: 'emerald', name: 'Green', bgClass: 'bg-emerald-50', hoverClass: 'hover:bg-emerald-100/60', borderClass: 'border-l-emerald-500', dotClass: 'bg-emerald-500' },
-  { id: 'sky', name: 'Blue', bgClass: 'bg-sky-50', hoverClass: 'hover:bg-sky-100/60', borderClass: 'border-l-sky-500', dotClass: 'bg-sky-500' },
-  { id: 'orange', name: 'Orange', bgClass: 'bg-orange-50', hoverClass: 'hover:bg-orange-100/60', borderClass: 'border-l-orange-500', dotClass: 'bg-orange-500' },
-  { id: 'rose', name: 'Red', bgClass: 'bg-rose-50', hoverClass: 'hover:bg-rose-100/60', borderClass: 'border-l-rose-500', dotClass: 'bg-rose-500' },
-  { id: 'pink', name: 'Pink', bgClass: 'bg-pink-50', hoverClass: 'hover:bg-pink-100/60', borderClass: 'border-l-pink-500', dotClass: 'bg-pink-500' }
+  { id: 'emerald', name: 'Green', bgClass: 'bg-emerald-50', solidHex: '#ecfdf5', hoverClass: 'hover:bg-emerald-100/60', borderClass: 'border-l-emerald-500', dotClass: 'bg-emerald-500' },
+  { id: 'sky', name: 'Blue', bgClass: 'bg-sky-50', solidHex: '#f0f9ff', hoverClass: 'hover:bg-sky-100/60', borderClass: 'border-l-sky-500', dotClass: 'bg-sky-500' },
+  { id: 'orange', name: 'Orange', bgClass: 'bg-orange-50', solidHex: '#fff7ed', hoverClass: 'hover:bg-orange-100/60', borderClass: 'border-l-orange-500', dotClass: 'bg-orange-500' },
+  { id: 'rose', name: 'Red', bgClass: 'bg-rose-50', solidHex: '#fff1f2', hoverClass: 'hover:bg-rose-100/60', borderClass: 'border-l-rose-500', dotClass: 'bg-rose-500' },
+  { id: 'pink', name: 'Pink', bgClass: 'bg-pink-50', solidHex: '#fdf2f8', hoverClass: 'hover:bg-pink-100/60', borderClass: 'border-l-pink-500', dotClass: 'bg-pink-500' }
 ];
 
 const getStudentHighlightClasses = (colorId?: string) => {
-  if (!colorId || colorId === 'none') return { bg: '', hover: 'hover:bg-slate-50/50', border: '', text: 'text-slate-800' };
+  if (!colorId || colorId === 'none') return { bg: '', solidBg: '#ffffff', hover: 'hover:bg-slate-50/50', border: '', text: 'text-slate-800' };
   const found = HIGHLIGHT_COLORS.find(c => c.id === colorId);
-  if (!found) return { bg: '', hover: 'hover:bg-slate-50/50', border: '', text: 'text-slate-800' };
+  if (!found) return { bg: '', solidBg: '#ffffff', hover: 'hover:bg-slate-50/50', border: '', text: 'text-slate-800' };
   return {
     bg: found.bgClass,
+    solidBg: found.solidHex,
     hover: found.hoverClass,
     border: `border-l-4 ${found.borderClass}`,
     text: 'text-slate-800'
@@ -971,13 +972,64 @@ export default function App() {
   });
   const [expandedSearchStudentId, setExpandedSearchStudentId] = useState<string | null>(null);
 
-  // Responsive Tab Navigation Helper: Auto-closes mobile drawer when selecting destination
+  // Weekly Timetable Horizontal Scroll Container Ref & Live Time Follower
+  const timetableScrollRef = useRef<HTMLDivElement>(null);
+
+  const scrollToCurrentTimeInTimetable = useCallback((smooth = true) => {
+    if (!timetableScrollRef.current) return;
+    const container = timetableScrollRef.current;
+    const innerContent = container.firstElementChild as HTMLElement | null;
+    if (!innerContent) return;
+
+    const now = new Date();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const TIMELINE_START_MIN = 8 * 60; // 480 (8:00 AM)
+    const TOTAL_MINUTES = 12 * 60; // 720 (8:00 AM - 8:00 PM)
+
+    // Clamp effective time within the timeline boundaries
+    const effectiveMinutes = Math.max(TIMELINE_START_MIN, Math.min(20 * 60, nowMinutes));
+    const nowFraction = (effectiveMinutes - TIMELINE_START_MIN) / TOTAL_MINUTES;
+
+    // Day column width: 112px on mobile (<640px), 208px on sm+
+    const isSmallScreen = typeof window !== 'undefined' ? window.innerWidth < 640 : false;
+    const dayColWidth = isSmallScreen ? 112 : 208;
+    const totalContentWidth = innerContent.scrollWidth;
+    const timelineWidth = Math.max(0, totalContentWidth - dayColWidth);
+
+    // Compute exact X coordinate of current time indicator red line
+    const redLineX = dayColWidth + (timelineWidth * nowFraction);
+
+    // Center the red line in the visible scroll container
+    const targetScrollLeft = Math.max(0, redLineX - (container.clientWidth / 2));
+
+    container.scrollTo({
+      left: targetScrollLeft,
+      behavior: smooth ? 'smooth' : 'auto'
+    });
+  }, []);
+
+  // Responsive Tab Navigation Helper: Auto-closes mobile drawer and follows current time on timetable
   const handleSelectTab = (tab: 'students' | 'attendance' | 'grades' | 'timetable' | 'calendar') => {
     setActiveTab(tab);
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
       setIsSidebarOpen(false);
     }
+    if (tab === 'timetable') {
+      setTimeout(() => {
+        scrollToCurrentTimeInTimetable(true);
+      }, 150);
+    }
   };
+
+  // Automatically follow the red line / current time whenever Timetable tab mounts or opens
+  useEffect(() => {
+    if (activeTab === 'timetable') {
+      const timer = setTimeout(() => {
+        scrollToCurrentTimeInTimetable(false);
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [activeTab, scrollToCurrentTimeInTimetable]);
 
   // Edit Class Name & Schedule Modal State
   const [editingClassTarget, setEditingClassTarget] = useState<{
@@ -2575,7 +2627,21 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Live Current Time Follower Button */}
+            <button
+              type="button"
+              onClick={() => scrollToCurrentTimeInTimetable(true)}
+              className="inline-flex items-center gap-2 px-3 py-2 text-xs font-bold text-[#4D5A8F] bg-[#E3EAFA] hover:bg-[#CED8F2] active:scale-95 rounded-xl border border-[#B3C0E6]/70 transition-all cursor-pointer shadow-3xs"
+              title="Auto-scroll horizontal view to current time indicator line"
+            >
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+              </span>
+              <span>Now ({now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })})</span>
+            </button>
+
             <button
               type="button"
               onClick={() => {
@@ -2633,7 +2699,7 @@ export default function App() {
           </div>
         ) : (
           <div className="flex flex-col gap-3">
-            <div className="overflow-x-auto border border-[#E8ECF5] rounded-2xl shadow-xs bg-white" id="timetable-proportional-timeline">
+            <div ref={timetableScrollRef} className="overflow-x-auto border border-[#E8ECF5] rounded-2xl shadow-xs bg-white scroll-smooth" id="timetable-proportional-timeline">
               <div className="min-w-[820px] sm:min-w-[1080px] flex flex-col">
                 
                 {/* Timeline Header: First Column = Day of Week, Rest = Hours from 8:00 AM */}
@@ -4395,7 +4461,7 @@ export default function App() {
         </aside>
 
         {/* MAIN DASHBOARD PANEL */}
-        <main className="flex-1 p-3 sm:p-5 md:p-8 flex flex-col gap-4 sm:gap-6 pb-28 lg:pb-8 overflow-x-auto bg-[#F5F8FF] text-[#252B3B]" id="streamlit-main">
+        <main className="flex-1 p-3 sm:p-5 md:p-8 flex flex-col gap-4 sm:gap-6 pb-36 sm:pb-32 lg:pb-8 overflow-x-auto bg-[#F5F8FF] text-[#252B3B]" id="streamlit-main">
           {/* TOP CONTROLLER BAR: Standalone Weekly Timetable & Calendar & Agenda Buttons */}
           <div className="flex items-center justify-between gap-3 flex-wrap" id="main-top-controller">
             <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-2.5 w-full sm:w-auto">
@@ -4825,15 +4891,15 @@ export default function App() {
                       </div>
                     ) : (
                       <div className="overflow-x-auto border border-[#E8ECF5] rounded-xl shadow-3xs">
-                        <table className="w-full text-left border-collapse" id="students-table-matrix">
+                        <table className="w-full text-left border-separate border-spacing-0" id="students-table-matrix">
                           <thead>
-                            <tr className="bg-[#E3EAFA] text-[#252B3B] text-[10px] uppercase font-bold tracking-widest border-b border-[#E8ECF5]">
-                              <th className="sticky left-0 z-20 bg-[#E3EAFA] pl-3.5 sm:pl-4 pr-1.5 py-3 w-24 sm:w-28 whitespace-nowrap shadow-[1px_0_0_0_#E8ECF5]">ID Number</th>
-                              <th className="sticky left-24 sm:left-28 z-20 bg-[#E3EAFA] pl-1.5 pr-3 sm:pr-4 py-3 w-36 sm:w-44 whitespace-nowrap shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]">Student Name</th>
-                              <th className="px-4 py-3 whitespace-nowrap">Academic Sneak Peek (Semester Progress)</th>
+                            <tr className="bg-[#E3EAFA] text-[#252B3B] text-[10px] uppercase font-bold tracking-widest">
+                              <th className="sticky left-0 z-20 bg-[#E3EAFA] pl-3.5 sm:pl-4 pr-1.5 py-3 whitespace-nowrap w-[130px] min-w-[130px] max-w-[130px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]">ID Number</th>
+                              <th className="sticky left-[130px] z-20 bg-[#E3EAFA] pl-2 pr-3 sm:pr-4 py-3 whitespace-nowrap w-[160px] min-w-[160px] sm:w-[190px] sm:min-w-[190px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]">Student Name</th>
+                              <th className="px-4 py-3 whitespace-nowrap border-b border-[#E8ECF5]">Academic Sneak Peek (Semester Progress)</th>
                             </tr>
                           </thead>
-                          <tbody className="divide-y divide-[#E8ECF5] text-xs">
+                          <tbody className="text-xs">
                             {activeClass.students.map(s => {
                               const colorInfo = getStudentHighlightClasses(s.color);
                               const rowBgClass = colorInfo.bg || 'bg-white';
@@ -4843,7 +4909,10 @@ export default function App() {
 
                               return (
                                 <tr key={s.id} className={`${rowBgClass} ${colorInfo.hover || 'hover:bg-[#F5F8FF]'} transition-all`}>
-                                  <td className={`sticky left-0 z-10 ${rowBgClass} pl-3.5 sm:pl-4 pr-1.5 py-3 whitespace-nowrap font-medium ${colorInfo.border || ''} shadow-[1px_0_0_0_#E8ECF5]`}>
+                                  <td 
+                                    className={`sticky left-0 z-10 pl-3.5 sm:pl-4 pr-1.5 py-3 whitespace-nowrap font-medium ${colorInfo.border || ''} w-[130px] min-w-[130px] max-w-[130px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]`}
+                                    style={{ backgroundColor: colorInfo.solidBg || '#ffffff' }}
+                                  >
                                     <div className="flex items-center gap-1.5">
                                       <StudentGearBox
                                         student={s}
@@ -4872,10 +4941,13 @@ export default function App() {
                                       </span>
                                     </div>
                                   </td>
-                                  <td className={`sticky left-24 sm:left-28 z-10 ${rowBgClass} pl-1.5 pr-3 sm:pr-4 py-3 font-bold text-[#252B3B] whitespace-nowrap shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]`}>
+                                  <td 
+                                    className="sticky left-[130px] z-10 pl-2 pr-3 sm:pr-4 py-3 font-bold text-[#252B3B] whitespace-nowrap w-[160px] min-w-[160px] sm:w-[190px] sm:min-w-[190px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]"
+                                    style={{ backgroundColor: colorInfo.solidBg || '#ffffff' }}
+                                  >
                                     <span>{s.fullName}</span>
                                   </td>
-                                  <td className={`px-4 py-3 ${rowBgClass}`}>
+                                  <td className={`px-4 py-3 border-b border-[#E8ECF5] ${rowBgClass}`}>
                                     <div className="flex items-center gap-2 flex-wrap">
                                       {/* Attendance days attended / total lessons given (e.g. 12/16) */}
                                       <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#E3EAFA] text-[#4D5A8F] border border-[#B3C0E6]/50 shadow-3xs">
@@ -4998,13 +5070,13 @@ export default function App() {
                       </div>
                     ) : (
                       <div className="overflow-x-auto border border-[#E8ECF5] rounded-xl shadow-3xs">
-                        <table className="w-full text-left border-collapse" id="attendance-table-matrix">
+                        <table className="w-full text-left border-separate border-spacing-0" id="attendance-table-matrix">
                           <thead>
-                            <tr className="bg-[#E3EAFA] text-[#252B3B] text-[10px] uppercase font-bold tracking-widest border-b border-[#E8ECF5]">
-                              <th className="sticky left-0 z-20 bg-[#E3EAFA] pl-3.5 sm:pl-4 pr-1.5 py-3.5 whitespace-nowrap w-24 sm:w-28 shadow-[1px_0_0_0_#E8ECF5]">ID Number</th>
-                              <th className="sticky left-24 sm:left-28 z-20 bg-[#E3EAFA] pl-1.5 pr-3 sm:pr-4 py-3.5 whitespace-nowrap w-36 sm:w-44 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]">Full Name</th>
+                            <tr className="bg-[#E3EAFA] text-[#252B3B] text-[10px] uppercase font-bold tracking-widest">
+                              <th className="sticky left-0 z-20 bg-[#E3EAFA] pl-3.5 sm:pl-4 pr-1.5 py-3.5 whitespace-nowrap w-[105px] min-w-[105px] max-w-[105px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]">ID Number</th>
+                              <th className="sticky left-[105px] z-20 bg-[#E3EAFA] pl-2 pr-3 sm:pr-4 py-3.5 whitespace-nowrap w-[155px] min-w-[155px] sm:w-[190px] sm:min-w-[190px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]">Full Name</th>
                               {getAttendanceDates(activeClass).map(d => (
-                                <th key={d} className="px-3 sm:px-4 py-3.5 whitespace-nowrap text-center">
+                                <th key={d} className="px-3 sm:px-4 py-3.5 whitespace-nowrap text-center border-b border-[#E8ECF5]">
                                   <div className="inline-flex items-center gap-1.5 justify-center">
                                     <span className="font-mono text-xs font-bold text-[#252B3B]">
                                       {formatDisplayDate(d)}
@@ -5022,14 +5094,24 @@ export default function App() {
                               ))}
                             </tr>
                           </thead>
-                          <tbody className="divide-y divide-[#E8ECF5] text-xs">
+                          <tbody className="text-xs">
                             {activeClass.students.map(s => {
                               const colorInfo = getStudentHighlightClasses(s.color);
                               const rowBgClass = colorInfo.bg || 'bg-white';
                               return (
                                 <tr key={s.id} className={`${rowBgClass} ${colorInfo.hover || 'hover:bg-[#F5F8FF]'} transition-all`}>
-                                  <td className={`sticky left-0 z-10 ${rowBgClass} pl-3.5 sm:pl-4 pr-1.5 py-3.5 text-[#747D91] font-mono font-medium ${colorInfo.border || ''} shadow-[1px_0_0_0_#E8ECF5]`}>{s.id}</td>
-                                  <td className={`sticky left-24 sm:left-28 z-10 ${rowBgClass} pl-1.5 pr-3 sm:pr-4 py-3.5 font-bold text-[#252B3B] whitespace-nowrap shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]`}>{s.fullName}</td>
+                                  <td 
+                                    className={`sticky left-0 z-10 pl-3.5 sm:pl-4 pr-1.5 py-3.5 text-[#747D91] font-mono font-medium ${colorInfo.border || ''} w-[105px] min-w-[105px] max-w-[105px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]`}
+                                    style={{ backgroundColor: colorInfo.solidBg || '#ffffff' }}
+                                  >
+                                    {s.id}
+                                  </td>
+                                  <td 
+                                    className="sticky left-[105px] z-10 pl-2 pr-3 sm:pr-4 py-3.5 font-bold text-[#252B3B] whitespace-nowrap w-[155px] min-w-[155px] sm:w-[190px] sm:min-w-[190px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]"
+                                    style={{ backgroundColor: colorInfo.solidBg || '#ffffff' }}
+                                  >
+                                    {s.fullName}
+                                  </td>
                                   {getAttendanceDates(activeClass).map(d => {
                                     const status = activeClass.attendance[s.id]?.[d] || 'Not Taken';
                                     
@@ -5038,7 +5120,7 @@ export default function App() {
                                     else if (status === 'Absent') pillClass = 'bg-rose-50 text-rose-700 border-rose-200';
 
                                     return (
-                                      <td key={d} className={`px-3 sm:px-4 py-3 text-center whitespace-nowrap ${rowBgClass}`}>
+                                      <td key={d} className={`px-3 sm:px-4 py-3 text-center whitespace-nowrap border-b border-[#E8ECF5] ${rowBgClass}`}>
                                         <button
                                           onClick={() => handleToggleAttendanceCell(s.id, d, status)}
                                           className={`inline-flex items-center justify-center min-w-[76px] min-h-[32px] px-3 py-1 rounded-full text-[11px] font-bold border transition-all cursor-pointer active:scale-95 ${pillClass}`}
@@ -5148,16 +5230,16 @@ export default function App() {
                       </div>
                     ) : (
                       <div className="overflow-x-auto border border-[#E8ECF5] rounded-xl shadow-3xs">
-                        <table className="w-full text-left border-collapse" id="grades-table-matrix">
+                        <table className="w-full text-left border-separate border-spacing-0" id="grades-table-matrix">
                           <thead>
-                            <tr className="bg-[#E3EAFA] text-[#252B3B] text-[10px] uppercase font-bold tracking-widest border-b border-[#E8ECF5]">
-                              <th className="sticky left-0 z-20 bg-[#E3EAFA] pl-3.5 sm:pl-4 pr-1.5 py-3.5 whitespace-nowrap w-24 sm:w-28 shadow-[1px_0_0_0_#E8ECF5]">ID Number</th>
-                              <th className="sticky left-24 sm:left-28 z-20 bg-[#E3EAFA] pl-1.5 pr-3 sm:pr-4 py-3.5 whitespace-nowrap w-36 sm:w-44 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]">Full Name</th>
+                            <tr className="bg-[#E3EAFA] text-[#252B3B] text-[10px] uppercase font-bold tracking-widest">
+                              <th className="sticky left-0 z-20 bg-[#E3EAFA] pl-3.5 sm:pl-4 pr-1.5 py-3.5 whitespace-nowrap w-[105px] min-w-[105px] max-w-[105px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]">ID Number</th>
+                              <th className="sticky left-[105px] z-20 bg-[#E3EAFA] pl-2 pr-3 sm:pr-4 py-3.5 whitespace-nowrap w-[155px] min-w-[155px] sm:w-[190px] sm:min-w-[190px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]">Full Name</th>
                               {activeClass.assessments.map(a => (
                                 <th 
                                   key={a.name} 
                                   onClick={() => handleOpenEditAssessment(a)}
-                                  className="px-4 py-3 whitespace-nowrap cursor-pointer hover:bg-[#CED8F2] transition-colors group select-none text-[#252B3B]"
+                                  className="px-4 py-3 whitespace-nowrap cursor-pointer hover:bg-[#CED8F2] transition-colors group select-none text-[#252B3B] border-b border-[#E8ECF5]"
                                   title="Click to edit test name, max mark, or weight"
                                 >
                                   <div className="flex flex-col items-start gap-0.5">
@@ -5175,7 +5257,7 @@ export default function App() {
                               ))}
                               <th 
                                 onClick={handleOpenFinalGradeWeights}
-                                className="px-5 py-3.5 whitespace-nowrap text-right text-emerald-900 font-extrabold bg-emerald-50 hover:bg-emerald-100/70 transition-colors cursor-pointer select-none group border-l border-[#E8ECF5]"
+                                className="px-5 py-3.5 whitespace-nowrap text-right text-emerald-900 font-extrabold bg-emerald-50 hover:bg-emerald-100/70 transition-colors cursor-pointer select-none group border-l border-b border-[#E8ECF5]"
                                 title="Click to view and adjust all assessment weights"
                               >
                                 <div className="flex flex-col items-end gap-0.5">
@@ -5190,20 +5272,30 @@ export default function App() {
                               </th>
                             </tr>
                           </thead>
-                          <tbody className="divide-y divide-[#E8ECF5] text-xs">
+                          <tbody className="text-xs">
                             {activeClass.students.map(s => {
                               const colorInfo = getStudentHighlightClasses(s.color);
                               const rowBgClass = colorInfo.bg || 'bg-white';
                               const finalGradeCellClass = s.color && s.color !== 'none' ? rowBgClass : 'bg-[#E3EAFA]/30';
                               return (
                                 <tr key={s.id} className={`${rowBgClass} ${colorInfo.hover || 'hover:bg-[#F5F8FF]'} transition-all`}>
-                                  <td className={`sticky left-0 z-10 ${rowBgClass} pl-3.5 sm:pl-4 pr-1.5 py-3.5 text-[#747D91] font-mono font-medium ${colorInfo.border || ''} shadow-[1px_0_0_0_#E8ECF5]`}>{s.id}</td>
-                                  <td className={`sticky left-24 sm:left-28 z-10 ${rowBgClass} pl-1.5 pr-3 sm:pr-4 py-3.5 font-bold text-[#252B3B] whitespace-nowrap shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]`}>{s.fullName}</td>
+                                  <td 
+                                    className={`sticky left-0 z-10 pl-3.5 sm:pl-4 pr-1.5 py-3.5 text-[#747D91] font-mono font-medium ${colorInfo.border || ''} w-[105px] min-w-[105px] max-w-[105px] border-b border-[#E8ECF5] border-r border-[#E8ECF5] shadow-[1px_0_0_0_#E8ECF5]`}
+                                    style={{ backgroundColor: colorInfo.solidBg || '#ffffff' }}
+                                  >
+                                    {s.id}
+                                  </td>
+                                  <td 
+                                    className="sticky left-[105px] z-10 pl-2 pr-3 sm:pr-4 py-3.5 font-bold text-[#252B3B] whitespace-nowrap w-[155px] min-w-[155px] sm:w-[190px] sm:min-w-[190px] border-b border-[#E8ECF5] border-r border-[#CED8F2] shadow-[3px_0_6px_-2px_rgba(0,0,0,0.12)]"
+                                    style={{ backgroundColor: colorInfo.solidBg || '#ffffff' }}
+                                  >
+                                    {s.fullName}
+                                  </td>
                                   {activeClass.assessments.map(a => {
                                     const score = activeClass.grades[s.id]?.[a.name];
                                     const maxMark = a.maxMark || 100;
                                     return (
-                                      <td key={a.name} className={`px-4 py-3.5 whitespace-nowrap ${rowBgClass}`}>
+                                      <td key={a.name} className={`px-4 py-3.5 whitespace-nowrap border-b border-[#E8ECF5] ${rowBgClass}`}>
                                         <div className="flex items-center gap-1">
                                           <GradeScoreInput 
                                             score={score}
@@ -5216,7 +5308,7 @@ export default function App() {
                                       </td>
                                     );
                                   })}
-                                  <td className={`px-5 py-3.5 text-right font-black text-emerald-950 whitespace-nowrap ${finalGradeCellClass}`}>
+                                  <td className={`px-5 py-3.5 text-right font-black text-emerald-950 whitespace-nowrap border-b border-[#E8ECF5] ${finalGradeCellClass}`}>
                                     {calculateFinalGrade(s.id, activeClass).toFixed(2)}
                                   </td>
                                 </tr>
@@ -7108,80 +7200,80 @@ export default function App() {
         </div>
       )}
 
-      {/* Mobile Fixed Bottom Navigation Bar - Ergonomic thumb reach for phone users */}
+      {/* Mobile Fixed Bottom Navigation Bar - Ergonomic thumb reach with safe area insets for iOS/Android */}
       <nav
         id="omni-mobile-bottom-nav"
         aria-label="Mobile Navigation"
-        className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#E8ECF5] px-1 py-1 flex lg:hidden items-center justify-around shadow-[0_-4px_16px_rgba(0,0,0,0.06)]"
+        className="fixed bottom-0 left-0 right-0 z-40 bg-white/98 backdrop-blur-lg border-t border-[#E8ECF5] px-2 pt-2.5 pb-7 sm:pb-3 [padding-bottom:max(1.75rem,env(safe-area-inset-bottom))] flex lg:hidden items-center justify-around shadow-[0_-6px_20px_rgba(0,0,0,0.08)]"
       >
         <button
           type="button"
           onClick={() => handleSelectTab('timetable')}
-          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-xl transition-all min-h-[46px] cursor-pointer ${
+          className={`flex flex-col items-center justify-center flex-1 py-1.5 px-1 rounded-xl transition-all min-h-[46px] cursor-pointer ${
             activeTab === 'timetable'
-              ? 'text-[#4D5A8F] font-bold bg-[#E3EAFA]/70'
+              ? 'text-[#4D5A8F] font-bold bg-[#E3EAFA]/80'
               : 'text-[#747D91] hover:text-[#4D5A8F] font-medium'
           }`}
         >
-          <Clock className={`h-4.5 w-4.5 mb-0.5 ${activeTab === 'timetable' ? 'text-[#4D5A8F]' : 'text-[#747D91]'}`} />
-          <span className="text-[10px] leading-tight">Timetable</span>
+          <Clock className={`h-5 w-5 mb-1 ${activeTab === 'timetable' ? 'text-[#4D5A8F]' : 'text-[#747D91]'}`} />
+          <span className="text-[10.5px] leading-tight font-semibold">Timetable</span>
         </button>
 
         <button
           type="button"
           onClick={() => handleSelectTab('calendar')}
-          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-xl transition-all min-h-[46px] cursor-pointer ${
+          className={`flex flex-col items-center justify-center flex-1 py-1.5 px-1 rounded-xl transition-all min-h-[46px] cursor-pointer ${
             activeTab === 'calendar'
-              ? 'text-[#4D5A8F] font-bold bg-[#E3EAFA]/70'
+              ? 'text-[#4D5A8F] font-bold bg-[#E3EAFA]/80'
               : 'text-[#747D91] hover:text-[#4D5A8F] font-medium'
           }`}
         >
-          <CalendarDays className={`h-4.5 w-4.5 mb-0.5 ${activeTab === 'calendar' ? 'text-[#4D5A8F]' : 'text-[#747D91]'}`} />
-          <span className="text-[10px] leading-tight">Calendar</span>
+          <CalendarDays className={`h-5 w-5 mb-1 ${activeTab === 'calendar' ? 'text-[#4D5A8F]' : 'text-[#747D91]'}`} />
+          <span className="text-[10.5px] leading-tight font-semibold">Calendar</span>
         </button>
 
         <button
           type="button"
           onClick={() => handleSelectTab('students')}
-          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-xl transition-all min-h-[46px] cursor-pointer ${
+          className={`flex flex-col items-center justify-center flex-1 py-1.5 px-1 rounded-xl transition-all min-h-[46px] cursor-pointer ${
             activeTab === 'students'
-              ? 'text-[#4D5A8F] font-bold bg-[#E3EAFA]/70'
+              ? 'text-[#4D5A8F] font-bold bg-[#E3EAFA]/80'
               : 'text-[#747D91] hover:text-[#4D5A8F] font-medium'
           }`}
         >
-          <Users className={`h-4.5 w-4.5 mb-0.5 ${activeTab === 'students' ? 'text-[#4D5A8F]' : 'text-[#747D91]'}`} />
-          <span className="text-[10px] leading-tight">Students</span>
+          <Users className={`h-5 w-5 mb-1 ${activeTab === 'students' ? 'text-[#4D5A8F]' : 'text-[#747D91]'}`} />
+          <span className="text-[10.5px] leading-tight font-semibold">Students</span>
         </button>
 
         <button
           type="button"
           onClick={() => handleSelectTab('attendance')}
-          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-xl transition-all min-h-[46px] cursor-pointer ${
+          className={`flex flex-col items-center justify-center flex-1 py-1.5 px-1 rounded-xl transition-all min-h-[46px] cursor-pointer ${
             activeTab === 'attendance'
-              ? 'text-[#4D5A8F] font-bold bg-[#E3EAFA]/70'
+              ? 'text-[#4D5A8F] font-bold bg-[#E3EAFA]/80'
               : 'text-[#747D91] hover:text-[#4D5A8F] font-medium'
           }`}
         >
-          <CalendarCheck className={`h-4.5 w-4.5 mb-0.5 ${activeTab === 'attendance' ? 'text-[#4D5A8F]' : 'text-[#747D91]'}`} />
-          <span className="text-[10px] leading-tight">Attendance</span>
+          <CalendarCheck className={`h-5 w-5 mb-1 ${activeTab === 'attendance' ? 'text-[#4D5A8F]' : 'text-[#747D91]'}`} />
+          <span className="text-[10.5px] leading-tight font-semibold">Attendance</span>
         </button>
 
         <button
           type="button"
           onClick={() => handleSelectTab('grades')}
-          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-xl transition-all min-h-[46px] cursor-pointer ${
+          className={`flex flex-col items-center justify-center flex-1 py-1.5 px-1 rounded-xl transition-all min-h-[46px] cursor-pointer ${
             activeTab === 'grades'
-              ? 'text-[#4D5A8F] font-bold bg-[#E3EAFA]/70'
+              ? 'text-[#4D5A8F] font-bold bg-[#E3EAFA]/80'
               : 'text-[#747D91] hover:text-[#4D5A8F] font-medium'
           }`}
         >
-          <GraduationCap className={`h-4.5 w-4.5 mb-0.5 ${activeTab === 'grades' ? 'text-[#4D5A8F]' : 'text-[#747D91]'}`} />
-          <span className="text-[10px] leading-tight">Grades</span>
+          <GraduationCap className={`h-5 w-5 mb-1 ${activeTab === 'grades' ? 'text-[#4D5A8F]' : 'text-[#747D91]'}`} />
+          <span className="text-[10.5px] leading-tight font-semibold">Grades</span>
         </button>
       </nav>
 
       {/* footer credits */}
-      <footer className="bg-white px-6 py-3 pb-20 lg:pb-3 border-t border-[#E8ECF5] text-center text-[10px] text-[#747D91] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2" id="omni-class-footer">
+      <footer className="bg-white px-6 py-3 pb-28 lg:pb-3 border-t border-[#E8ECF5] text-center text-[10px] text-[#747D91] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2" id="omni-class-footer">
         <span>Omni Class — Academic Roster, Attendance & Grade Records Manager</span>
         <span className="font-mono text-[#8F9DCC]">Offline-Ready & Cloud-Connected</span>
       </footer>
